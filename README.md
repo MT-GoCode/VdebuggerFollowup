@@ -78,12 +78,41 @@ git clone https://github.com/THUDM/LVBench.git
 cd LVBench/data
 wget https://huggingface.co/datasets/THUDM/LVBench/resolve/main/video_info.meta.jsonl
 cd ../scripts
-chmod +x download.sh
 
 # ensure ffmpeg is installed -- see appendix setup
-# recommended to get cookies.txt -- still need to figure this out
-./download.sh
+```
+Inside scripts folder, the authors of LVBench provided a download.sh script, but it is lacking in a few spots, namely its ability to use a cookies file to download from youtube and recoding videos.
 
+I recommend creating a new_download.sh in scripts/ and running this:
+```
+#!/bin/bash
+
+python save_video_txt.py
+mkdir -p ../videos
+
+VIDEO_LIST="videos.txt"
+
+while IFS= read -r url || [[ -n "$url" ]]; do
+    # Skip empty lines and comment lines
+    [[ -z "$url" || "$url" == \#* ]] && continue
+
+    # TODO: set this if necessary.
+    export PATH="$HOME/bin/ffmpeg-7.0.2-amd64-static:$PATH"
+
+    echo "Checking for ffmpeg - should print something, otherwise you ought to manually set PATH in previous line"
+    echo "$(which ffmpeg)"
+    
+    echo "Downloading: $url"
+
+    # TODO: if you have a cookies.txt file (which will make things go smoother), put it in the same directory as this, and include it for yt-dlp as follows
+    yt-dlp \
+        --cookies "cookies.txt" \
+        --no-overwrites \
+        --output "../videos/%(id)s.%(ext)s" \
+        -f bestvideo+bestaudio/best \
+        --recode-video mp4 \
+        "$url"
+done < "$VIDEO_LIST"
 ```
 
 ## Setup Appendix 

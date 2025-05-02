@@ -13,11 +13,11 @@ dataset:
   max_samples: 10
 
 code_gen:
-    model_class: openai
-    specific_model: gpt-4o
-    temperature: 1
-    prompt: ./prompts/benchmarks/nextqa.chatprompt
-    top_p: 0.9
+    # model_class: openai
+    # specific_model: gpt-4o
+    # temperature: 1
+    # prompt: ./prompts/benchmarks/nextqa.chatprompt
+    # top_p: 0.9
 
     # model_class: codellama
     # specific_model: codellama/CodeLlama-7b-hf
@@ -26,12 +26,12 @@ code_gen:
     # max_new_tokens: 20
     # top_p: 0.9
 
-    # model_class: deepseek
-    # specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base
-    # temperature: 1
-    # prompt: ./prompts/benchmarks/nextqa.completionprompt
-    # max_new_tokens: 256
-    # top_p: 0.9
+    model_class: deepseek
+    specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base
+    temperature: 1
+    prompt: ./prompts/benchmarks/nextqa.completionprompt
+    max_new_tokens: 256
+    top_p: 0.9
 
 load_models:                                        # which code-running stage models to load
     maskrcnn: False

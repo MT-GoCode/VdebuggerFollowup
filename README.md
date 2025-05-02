@@ -20,7 +20,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words numpy omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd
 
-pip install --upgrade transformers tokenizers # make sure these two have compatible versions with one another. This will mess up BLIP2 if not done properly
+pip install --upgrade transformers==4.47 tokenizers==0.21.0 # make sure these two have compatible versions with one another. This will mess up BLIP2 if not done properly
 
 # Building GLIP
 conda deactivate 

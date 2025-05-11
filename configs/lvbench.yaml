@@ -3,13 +3,14 @@ path_pretrained_models: './pretrained_models'       # Path to the pretrained mod
 execute_code: True                                 # Execute the code after generating it. Only applies to main_batch
 
 dataset:
-  data_path: $DATASETS/LVBench/scripts/videos/00000
+  data_path: $DATASETS/LVBench/standardized_videos
+  list_path: $DATASETS/LVBench/csvs/full.csv
   dataset_name: LVBench
   version: multiplechoice
   fps: 10
   split: full
   batch_size: 2
-  max_samples: 10
+  max_samples: 4
   clear_tensor_cache: False
   tensor_cache: "$DATASETS/LVBench/tensor_cache"
   # a single, tensorized video can be up to 25GB. i ought to have variable batch sizes... harmless if a large batch is on the same video, but go video-by-video.

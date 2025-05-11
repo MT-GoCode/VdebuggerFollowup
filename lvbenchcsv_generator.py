@@ -1,56 +1,89 @@
 import os
 import json
 import csv
+import subprocess
+
+def get_video_fps(video_path):
+    """
+    Uses ffprobe to extract the frame rate of the video.
+    Returns it as a float, or None if something goes wrong.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "default=nokey=1:noprint_wrappers=1",
+                video_path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        raw_fps = result.stdout.strip()
+        if "/" in raw_fps:
+            num, denom = raw_fps.split("/")
+            return round(float(num) / float(denom), 3)
+        else:
+            return round(float(raw_fps), 3)
+    except Exception as e:
+        print(f"Failed to get fps for {video_path}: {e}")
+        return None
 
 def generate_csv(video_folder, jsonl_path, output_csv_path):
-    # Read all metadata JSON files
-    metadata_files = {}
-    json_folder = os.path.join(video_folder)
-    for filename in os.listdir(json_folder):
-        if filename.endswith(".json"):
-            filepath = os.path.join(json_folder, filename)
-            with open(filepath, "r") as f:
-                data = json.load(f)
-                metadata_files[data["url"]] = (data["key"], filename)
-
     rows = []
 
+    import glob
+
+    # Read the JSONL metadata file
     with open(jsonl_path, "r") as f:
         for line_idx, line in enumerate(f):
             obj = json.loads(line)
             yt_key = obj["key"]
-            constructed_url = f"https://www.youtube.com/watch?v={yt_key}"
 
-            if constructed_url not in metadata_files:
-                print(f"No matching metadata file for key {yt_key}, row #{line_idx}")
+            # Try all known extensions
+            possible_exts = [".mp4", ".webm", ".mkv"]
+            matching_files = [
+                os.path.join(video_folder, f"{yt_key}{ext}")
+                for ext in possible_exts
+                if os.path.exists(os.path.join(video_folder, f"{yt_key}{ext}"))
+            ]
+
+            if not matching_files:
+                print(f"Missing video file for key {yt_key}, row #{line_idx}")
                 continue
 
-            key_id, metadata_filename = metadata_files[constructed_url]
-            mp4_path = os.path.join(json_folder, f"{key_id}.mp4")
-            if not os.path.exists(mp4_path):
-                print(f"Metadata file found for key {yt_key}, row #{line_idx}, but missing video file {key_id}.mp4")
-                continue
+            # Use the first matching file (you can sort to prefer .mp4 if you want)
+            video_path = matching_files[0]
 
-            # Now we can process
-            # frame_count = None  # You can leave it None unless you parse video fps*duration
+            # Extract video resolution
             width = obj["video_info"]["resolution"]["width"]
             height = obj["video_info"]["resolution"]["height"]
 
+            # Extract frame rate using ffprobe
+            fps = get_video_fps(video_path)
+            if fps is None:
+                print(f"Could not determine FPS for {yt_key}, skipping.")
+                continue
+
+            # Loop through the QA pairs
             for qa in obj["qa"]:
                 question_text = qa["question"]
                 answer_letter = qa["answer"].strip()
 
-                # Parse options
+                # Extract answer choices from the question text
                 options = []
                 parts = question_text.split('\n')
                 for part in parts:
                     if part.strip().startswith("("):
                         options.append(part.split(")", 1)[1].strip())
 
+                # Pad to 4 options if needed
                 if len(options) < 4:
                     options += [""] * (4 - len(options))
 
-                # Resolve full answer text
+                # Get the full answer text based on letter
                 letter_to_idx = {"A": 0, "B": 1, "C": 2, "D": 3}
                 answer_idx = letter_to_idx.get(answer_letter, None)
                 if answer_idx is None or answer_idx >= len(options):
@@ -58,14 +91,15 @@ def generate_csv(video_folder, jsonl_path, output_csv_path):
                     continue
                 full_answer = options[answer_idx]
 
-                # Clean question
+                # Extract just the main question (first line)
                 clean_question = parts[0].strip()
 
+                # Construct the CSV row
                 row = {
-                    "video": key_id,
-                    # "frame_count": frame_count if frame_count is not None else "",
+                    "video": yt_key,
                     "width": width,
                     "height": height,
+                    "fps": fps,
                     "question": clean_question,
                     "answer": full_answer,
                     "type": qa.get("question_type", [""])[0],
@@ -76,11 +110,9 @@ def generate_csv(video_folder, jsonl_path, output_csv_path):
                 }
                 rows.append(row)
 
-    # Write CSV
+    # Write to CSV
     with open(output_csv_path, "w", newline='', encoding='utf-8') as csvfile:
-        fieldnames = ["video", 
-                    #   "frame_count",
-                      "width", "height", "question", "answer", "type", "a0", "a1", "a2", "a3"]
+        fieldnames = ["video", "width", "height", "fps", "question", "answer", "type", "a0", "a1", "a2", "a3"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -88,9 +120,9 @@ def generate_csv(video_folder, jsonl_path, output_csv_path):
 
     print(f"CSV generation complete. {len(rows)} rows written.")
 
-
+# Run the function with new paths
 generate_csv(
-    video_folder="/local/minh/VIPER/datasets/LVBench/scripts/videos/00000",
+    video_folder="/local/minh/VIPER/datasets/LVBench/raw_videos",
     jsonl_path="/local/minh/VIPER/datasets/LVBench/data/video_info.meta.jsonl",
-    output_csv_path="/local/minh/VIPER/datasets/LVBench/csvs/list.csv"
+    output_csv_path="/local/minh/VIPER/datasets/LVBench/csvs/full.csv"
 )

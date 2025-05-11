@@ -10,15 +10,15 @@ Root directory used is ~/VIPER.
 # Initial repository setup
 git clone https://github.com/cvlab-columbia/viper.git
 
-cd viper
-chmod +x download_models.sh
-./download_models.sh
-
 conda create -n viper-main python=3.10 -y
 conda activate viper-main
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # Install the torch wheels that are most compatible with the underlying architecture. We had 1080 Ti's, despite 12.8 driver installed, 11.8 wheels is the right one to install.
 
-pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words numpy omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd
+pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words numpy omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd dotenv
+
+cd viper
+chmod +x download_models.sh # needs gdown
+./download_models.sh
 
 pip install --upgrade transformers==4.47 tokenizers==0.21.0 # make sure these two have compatible versions with one another. This will mess up BLIP2 if not done properly
 
@@ -26,20 +26,24 @@ pip install --upgrade transformers==4.47 tokenizers==0.21.0 # make sure these tw
 conda deactivate 
 
 cd viper
-# Here, you should clone the modified GLIP repo you made. Modifications include compatibility with CUDA 12.8 and modern numpy. For reference the original is: https://github.com/sachit-menon/GLIP.git. This will not work.
+# Here, you should clone the modified GLIP repo you made in place of the GLIP subfolder. Modifications include compatibility with CUDA 12.8 and modern numpy. For reference the original is: https://github.com/sachit-menon/GLIP.git. This will not work.
 # after cloning your modified GLIP repo,  
+git clone https://github.com/MT-GoCode/GLIP_for_vdebug.git
+rm GLIP
+mv GLIP_for_vdebug GLIP
 
 conda create -n glip-compile python=3.10 -y
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 # Install the wheels that are compatible with the installed CUDA driver version, regardless of what hardware is. we had 12.8 Driver with older 1080Ti's.
 
 cd GLIP
-git checkout cuda-128-compat # switch to the branch compatible with your driver. i made changes to GLIP so it would work in 12.8 and modern numpy.
+git checkout cuda-128-compat # switch to the branch compatible with your driver. i made changes to GLIP so it would work in 12.8 and modern numpy. 
+# BTW, cuda-128-compat was tested and also works with: CUDA Driver 12.6
 python setup.py build develop --user
+
+conda deactivate 
 
 # Not critical, just to get some imports to run
 python -m spacy download en_core_web_lg
-
-conda deactivate 
 
 conda activate viper-main
 
@@ -87,32 +91,75 @@ I recommend creating a new_download.sh in scripts/ and running this:
 ```
 #!/bin/bash
 
+RAW_VIDEO_DIR="../raw_videos"
+STANDARD_VIDEO_DIR="../standardized_videos"
+
+# [ -d $RAW_VIDEO_DIR ] && rm -rf $RAW_VIDEO_DIR
+# [ -d $RAW_VIDEO_DIR ] && rm -rf $STANDARD_VIDEO_DIR
+
 python save_video_txt.py
-mkdir -p ../videos
+mkdir -p $RAW_VIDEO_DIR
+
+# TODO: set this if necessary.
+# export PATH="$HOME/bin/ffmpeg-7.0.2-amd64-static:$PATH"
+
+echo "Checking for ffmpeg - should print something, otherwise you ought to manually set PATH in previous line"
+echo "$(which ffmpeg)"
 
 VIDEO_LIST="videos.txt"
 
 while IFS= read -r url || [[ -n "$url" ]]; do
-    # Skip empty lines and comment lines
     [[ -z "$url" || "$url" == \#* ]] && continue
 
-    # TODO: set this if necessary.
-    export PATH="$HOME/bin/ffmpeg-7.0.2-amd64-static:$PATH"
+    echo "Checking: $url"
 
-    echo "Checking for ffmpeg - should print something, otherwise you ought to manually set PATH in previous line"
-    echo "$(which ffmpeg)"
-    
+    # Get the YouTube video ID
+    id=$(yt-dlp --get-id "$url")
+
+    # Check if any file with this ID already exists
+    if ls "$RAW_VIDEO_DIR/${id}".{mp4,webm,mkv} &>/dev/null; then
+        echo "Already exists: $id — skipping"
+        continue
+    fi
+
     echo "Downloading: $url"
 
-    # TODO: if you have a cookies.txt file (which will make things go smoother), put it in the same directory as this, and include it for yt-dlp as follows
     yt-dlp \
         --cookies "cookies.txt" \
         --no-overwrites \
-        --output "../videos/%(id)s.%(ext)s" \
-        -f bestvideo+bestaudio/best \
-        --recode-video mp4 \
+        -f "bv*+ba/best" \
+        --output "$RAW_VIDEO_DIR/%(id)s.%(ext)s" \
         "$url"
-done < "$VIDEO_LIST"
+
+done < $VIDEO_LIST
+
+# If desired, you can standardize the formats with FFMPEG.
+
+# STANDARDIZATION
+mkdir -p $STANDARD_VIDEO_DIR
+
+# Standardization details:
+"""
+Container: .mp4
+Video Codec: H.264 (libx264)
+Video Resolution: original
+Pixel Format: yuv420p (default, widely compatible)
+Audio Codec: AAC
+Audio Bitrate: 128 kbps
+Frame Rate: original
+Encoding Quality: CRF 18
+Overwrite Mode: Always (-y)
+"""
+
+for f in ../raw_videos/*; do
+  filename=$(basename "$f")
+  name="${filename%.*}"
+  ffmpeg -y -i "$f" \
+    -c:v libx264 -preset fast -crf 18 \
+    -pix_fmt yuv420p \
+    -c:a aac -b:a 128k \
+    ".$STANDARD_VIDEO_DIR/${name}.mp4"
+done
 ```
 
 ## Setup Appendix 

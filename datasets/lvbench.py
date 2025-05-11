@@ -71,6 +71,8 @@ from tqdm import tqdm
 
 # upgrade: batching
 # @memory.cache
+from functools import lru_cache
+@lru_cache(maxsize=2)
 def tensorize_video(video_path, fps=30):
     print(f"tensorizing {video_path} ")
     # device = get_best_gpu(min_memory_required_mb=200)
@@ -119,34 +121,36 @@ def save_file(obj, filename):
 
 
 class LVBenchDataset(Dataset):
-    def __init__(self, split, data_path="", tokenize=None, max_samples=None, version='openended', fps=30,
+    def __init__(self, split, data_path, list_path, tokenize=None, max_samples=None, version='openended', fps=30,
                  start_sample=0, clear_tensor_cache = False, tensor_cache = None, **kwargs):
 
         assert version in ['openended', 'multiplechoice']
 
         self.split = split
         self.data_path = data_path
+        self.list_path = list_path
         self.tokenize = tokenize
         self.version = version
         self.fps = fps
         self.input_type = 'video'
 
-        self.tensor_cache = tensor_cache
-        if (self.tensor_cache):
-            self.tensor_cache = os.path.expandvars(self.tensor_cache)
-            self.tensor_cache = os.path.expanduser(self.tensor_cache)
-            os.makedirs(self.tensor_cache, exist_ok=True)
+        # THE TENSOR CACHE WILL NOT BE USED
+        # self.tensor_cache = tensor_cache
+        # if (self.tensor_cache):
+        #     self.tensor_cache = os.path.expandvars(self.tensor_cache)
+        #     self.tensor_cache = os.path.expanduser(self.tensor_cache)
+        #     os.makedirs(self.tensor_cache, exist_ok=True)
 
-        if (clear_tensor_cache and self.tensor_cache):
-            if os.path.exists(self.tensor_cache):
-                shutil.rmtree(self.tensor_cache)
+        # if (clear_tensor_cache and self.tensor_cache):
+        #     if os.path.exists(self.tensor_cache):
+        #         shutil.rmtree(self.tensor_cache)
 
             # don't delete the directory itself
-            os.makedirs(self.tensor_cache, exist_ok=True)
+            # os.makedirs(self.tensor_cache, exist_ok=True)
         
-        # sample_list_path = os.path.join(self.data_path, directory, f'{split}.csv')
-        sample_list_path = os.path.join("~/VIPER/datasets/LVBench/csvs/", f'{split}.csv')
-        self.sample_list = pd.read_csv(sample_list_path, dtype = str)
+        self.list_path = os.path.expandvars(self.list_path)
+        self.list_path = os.path.expanduser(self.list_path)
+        self.sample_list = pd.read_csv(self.list_path, dtype = str)
         
         if max_samples is not None:
             end = start_sample+max_samples
@@ -169,12 +173,10 @@ class LVBenchDataset(Dataset):
         return video_path
 
     def __getitem__(self, idx):
-        print("getting new item. let's check RAM. new batch, oughtta be empty.")
+        print("getting new item. let's check RAM usage -- should be appropriately used based on the number of questions per video & batch size.")
         import subprocess
         output = subprocess.check_output(["free", "-h"], text=True)
         print(output)
-        import gc
-        gc.collect()
 
         sample_id = self.sample_ids[idx]
         cur_sample = self.sample_list.loc[sample_id]
@@ -186,22 +188,22 @@ class LVBenchDataset(Dataset):
         video_name = str(cur_sample['video'])
 
         # critical difference from nextqa; videos are stored as siblings - just  merge data_path and video name
-        
-        if self.tensor_cache:
-            cache_identifier = f"{video_name}_{self.fps}.pt"
+        video_path = os.path.join(self.data_path, video_name + '.mp4')
 
-            cache_path = os.path.join(self.tensor_cache, cache_identifier)
-            if not os.path.exists(cache_path):
-                video_path = os.path.join(self.data_path, video_name + '.mp4')
-                video = tensorize_video(video_path, fps = self.fps)
-                torch.save(video, cache_path)
-                print(f"video {video_name} completely finished processing")
-            else: 
-                video = torch.load(cache_path)
-                print(f"video {video_name} tensor fetched from disk")
-        else:
-            video = tensorize_video(video_path, fps = self.fps)
-            print(f"video {video_name} completely finished processing")
+        # if self.tensor_cache:
+        #     cache_identifier = f"{video_name}_{self.fps}.pt"
+
+        #     cache_path = os.path.join(self.tensor_cache, cache_identifier)
+        #     if not os.path.exists(cache_path):
+        #         video = tensorize_video(video_path, fps = self.fps)
+        #         torch.save(video, cache_path)
+        #         print(f"video {video_name} completely finished processing")
+        #     else: 
+        #         video = torch.load(cache_path)
+        #         print(f"video {video_name} tensor fetched from disk")
+
+        video = tensorize_video(video_path, fps = self.fps)
+        print(f"video {video_name} completely finished processing")
         
         if self.version == 'openended':
             answer = str(cur_sample['answer'])

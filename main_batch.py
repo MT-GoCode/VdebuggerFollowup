@@ -1,17 +1,13 @@
-import datetime
-import math
+import json
 import os
 import pathlib
-from functools import partial
-import warnings
 import traceback
-
+import warnings
+from functools import partial
 
 import pandas as pd
 import torch.multiprocessing as mp
 from joblib import Memory
-from num2words import num2words
-import numpy as np
 from omegaconf import OmegaConf
 from rich.console import Console
 from torch.utils.data import DataLoader
@@ -19,8 +15,6 @@ from tqdm import tqdm
 
 from configs import config
 from utils import seed_everything
-import datasets
-import json
 
 # See https://github.com/pytorch/pytorch/issues/11201, https://github.com/pytorch/pytorch/issues/973
 # Not for dataloader, but for multiprocessing batches
@@ -89,7 +83,7 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
             image_patch_partial, video_segment_partial,
             # Functions to be used
             llm_query_partial, bool_to_yesno, distance, best_image_match)
-        
+
         print("EXECUTION OF #", sample_id, " finished. Result is: ")
         print(result)
     except Exception as e:
@@ -161,7 +155,8 @@ def main():
     codes_all = None
     if config.use_cached_codex:
         results = pd.read_csv(config.cached_codex_path)
-        codes_all = [r.split('# Answer is:')[1] for r in results['code']]
+        codes_all = results['code'].tolist()
+        # codes_all = [r.split('# Answer is:')[1] for r in results['code']]
     # python -c "from joblib import Memory; cache = Memory('cache/', verbose=0); cache.clear()"
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True,
                             collate_fn=my_collate)
@@ -176,6 +171,8 @@ def main():
     all_possible_answers = []
     all_query_types = []
 
+    import pdb
+    pdb.set_trace()
     with mp.Pool(processes=num_processes, initializer=worker_init, initargs=(queues_results,)) \
             if config.multiprocessing else open(os.devnull, "w") as pool:
         try:
@@ -189,7 +186,6 @@ def main():
                 if not config.use_cached_codex:
                     codes = codex(prompt=batch['query'], base_prompt=base_prompt, input_type=input_type,
                                   extra_context=batch['extra_context'])
-
                 else:
                     codes = codes_all[i * batch_size:(i + 1) * batch_size]  # If cache
 
@@ -199,7 +195,8 @@ def main():
                         # Otherwise, we would create a new model for every process
                         results = []
                         for c, sample_id, img, possible_answers, query in \
-                                zip(codes, batch['sample_id'], batch['image'], batch['possible_answers'], batch['query']):
+                                zip(codes, batch['sample_id'], batch['image'], batch['possible_answers'],
+                                    batch['query']):
                             result = run_program([c, sample_id, img, possible_answers, query], queues_in, input_type)
                             results.append(result)
 
@@ -242,15 +239,13 @@ def main():
                         accuracy = dataset.accuracy(all_results, all_answers, all_possible_answers, all_query_types)
                         console.print(f'Accuracy at Batch {i}/{n_batches}: {accuracy}')
                     except Exception as e:
-                        console.print(f'Error computing accuracy: {e}') 
+                        console.print(f'Error computing accuracy: {e}')
 
         except Exception as e:
             # print full stack trace
             traceback.print_exc()
             console.print(f'Exception: {e}')
             console.print("Completing logging and exiting...")
-
-        
 
     try:
         accuracy = dataset.accuracy(all_results, all_answers, all_possible_answers, all_query_types)
@@ -283,7 +278,7 @@ def main():
         total_execution_errors = 0
 
         for rid, path, query, result, answer, poss_ans, code in zip(
-            all_ids, all_img_paths, all_queries, all_results, all_answers, all_possible_answers, all_codes
+                all_ids, all_img_paths, all_queries, all_results, all_answers, all_possible_answers, all_codes
         ):
             result_str = str(result).lower()
             if "error during compilation" in result_str:
@@ -313,32 +308,32 @@ def main():
 
         with open(results_dir / filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
-    
-    # if config.save:
-    #     results_dir = pathlib.Path(config['results_dir'])
-    #     results_dir = results_dir / config.dataset.split
-    #     results_dir.mkdir(parents=True, exist_ok=True)
-    #     if not config.save_new_results:
-    #         filename = 'results.csv'
-    #     else:
-    #         existing_files = list(results_dir.glob('results_*.csv'))
-    #         if len(existing_files) == 0:
-    #             filename = 'results_0.csv'
-    #         else:
-    #             filename = 'results_' + str(max([int(ef.stem.split('_')[-1]) for ef in existing_files if
-    #                                              str.isnumeric(ef.stem.split('_')[-1])]) + 1) + '.csv'
-    #     print('Saving results to', filename)
-    #     df = pd.DataFrame([all_results, all_answers, all_codes, all_ids, all_queries, all_img_paths,
-    #                        all_possible_answers]).T
-    #     df.columns = ['result', 'answer', 'code', 'id', 'query', 'img_path', 'possible_answers']
-    #     # make the result column a string
-    #     df['result'] = df['result'].apply(str)
-    #     df.to_csv(results_dir / filename, header=True, index=False, encoding='utf-8')
-    #     # torch.save([all_results, all_answers, all_codes, all_ids, all_queries, all_img_paths], results_dir/filename)
 
-        # if config.wandb:
-        #     wandb.log({'accuracy': accuracy})
-        #     wandb.log({'results': wandb.Table(dataframe=df, allow_mixed_types=True)})
+    if config.save:  # why delete this code...
+        results_dir = pathlib.Path(config['results_dir'])
+        results_dir = results_dir / config.dataset.split
+        results_dir.mkdir(parents=True, exist_ok=True)
+        if not config.save_new_results:
+            filename = 'results.csv'
+        else:
+            existing_files = list(results_dir.glob('results_*.csv'))
+            if len(existing_files) == 0:
+                filename = 'results_0.csv'
+            else:
+                filename = 'results_' + str(max([int(ef.stem.split('_')[-1]) for ef in existing_files if
+                                                 str.isnumeric(ef.stem.split('_')[-1])]) + 1) + '.csv'
+        print('Saving results to', filename)
+        df = pd.DataFrame([all_results, all_answers, all_codes, all_ids, all_queries, all_img_paths,
+                           all_possible_answers]).T
+        df.columns = ['result', 'answer', 'code', 'id', 'query', 'img_path', 'possible_answers']
+        # make the result column a string
+        df['result'] = df['result'].apply(str)
+        df.to_csv(results_dir / filename, header=True, index=False, encoding='utf-8')
+        # torch.save([all_results, all_answers, all_codes, all_ids, all_queries, all_img_paths], results_dir/filename)
+
+    # if config.wandb:
+    #     wandb.log({'accuracy': accuracy})
+    #     wandb.log({'results': wandb.Table(dataframe=df, allow_mixed_types=True)})
 
     finish_all_consumers()
 

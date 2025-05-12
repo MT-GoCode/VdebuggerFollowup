@@ -15,6 +15,8 @@ from functools import partial
 from itertools import chain
 from typing import List, Union
 
+import backoff
+import openai
 import torch
 import torchvision
 from PIL import Image
@@ -330,29 +332,31 @@ class MaskRCNNModel(BaseModel):
         return image
 
     @torch.no_grad()
-    def detect(self, images: torch.Tensor, return_labels=True):
+    def detect(self, images: torch.Tensor, confidence_threshold: float = None):
         if type(images) != list:
             images = [images]
+        threshold = confidence_threshold if confidence_threshold is not None else self.threshold
+
         images = [self.prepare_image(im) for im in images]
         detections = self.obj_detect(images)
+        scores = []
         for i in range(len(images)):
+            scores.append(detections[i]['scores'][detections[i]['scores'] > threshold])
+
             height = detections[i]['masks'].shape[-2]
             # Just return boxes (no labels no masks, no scores) with scores > threshold
-            if return_labels:  # In the current implementation, we only return labels
-                d_i = detections[i]['labels'][detections[i]['scores'] > self.threshold]
-                detections[i] = set([self.categories[d] for d in d_i])
-            else:
-                d_i = detections[i]['boxes'][detections[i]['scores'] > self.threshold]
-                # Return [left, lower, right, upper] instead of [left, upper, right, lower]
-                detections[i] = torch.stack([d_i[:, 0], height - d_i[:, 3], d_i[:, 2], height - d_i[:, 1]], dim=1)
+            d_i = detections[i]['boxes'][detections[i]['scores'] > threshold]
+            # Return [left, lower, right, upper] instead of [left, upper, right, lower]
+            detections[i] = torch.stack([d_i[:, 0], height - d_i[:, 3], d_i[:, 2], height - d_i[:, 1]], dim=1)
 
-        return detections
+        return detections, scores
 
-    def forward(self, image, return_labels=False):
-        obj_detections = self.detect(image, return_labels)
+    def forward(self, image, confidence_threshold: float = None):
+        obj_detections, obj_scores = self.detect(image, confidence_threshold=confidence_threshold)
         # Move to CPU before sharing. Alternatively we can try cloning tensors in CUDA, but may not work
         obj_detections = [(v.to('cpu') if isinstance(v, torch.Tensor) else list(v)) for v in obj_detections]
-        return obj_detections
+        obj_scores = [(v.to('cpu') if isinstance(v, torch.Tensor) else list(v)) for v in obj_scores]
+        return obj_detections, obj_scores
 
 
 class OwlViTModel(BaseModel):
@@ -552,9 +556,7 @@ class GLIPModel(BaseModel):
                 return image
 
             @torch.no_grad()
-            def forward(self, image: torch.Tensor, obj: Union[str, list], return_labels: bool = False,
-                        confidence_threshold=None):
-
+            def forward(self, image: torch.Tensor, obj: Union[str, list], confidence_threshold=None):
                 if confidence_threshold is not None:
                     original_confidence_threshold = self.confidence_threshold
                     self.confidence_threshold = confidence_threshold
@@ -589,10 +591,10 @@ class GLIPModel(BaseModel):
 
                 if confidence_threshold is not None:
                     self.confidence_threshold = original_confidence_threshold
-                if return_labels:
-                    # subtract 1 because it's 1-indexed for some reason
-                    return bboxes, inference_output.get_field("labels").cpu().numpy() - 1
-                return bboxes
+
+                # subtract 1 because it's 1-indexed for some reason
+                # return bboxes, inference_output.get_field("labels").cpu().numpy() - 1
+                return bboxes, inference_output.get_field("scores")
 
         self.glip_demo = OurGLIPDemo(*args, dev=self.dev)
 
@@ -866,50 +868,40 @@ class GPT3Model(BaseModel):
                                    stop=["\n", "<|endoftext|>"])
         return response
 
-    # def get_general(self, prompts) -> list[str]:
-    #     response = self.query_gpt3(prompts, model=self.model, max_tokens=256, top_p=1, frequency_penalty=0,
-    #                                presence_penalty=0)
-    #     if self.model == 'chatgpt':
-    #         response = [r['message']['content'] for r in response['choices']]
-    #     else:
-    #         response = [r["text"] for r in response['choices']]
-    #     return response
-
     def get_general(self, prompts) -> list[str]:
-        import pdb
-        pdb.set_trace()
-        results = []
-        for p in prompts:
-            r = self.query_gpt3(p, model=self.model, max_tokens=1024, top_p=1, frequency_penalty=0, presence_penalty=0)
-            results.append(r)
-        return results
+        response = self.query_gpt3(prompts, model=self.model, max_tokens=256, top_p=1, frequency_penalty=0,
+                                   presence_penalty=0)
+        if self.model == 'chatgpt':
+            response = [r['message']['content'] for r in response['choices']]
+        else:
+            response = [r["text"] for r in response['choices']]
+        return response
 
-    def query_gpt3(self, prompt, model="gpt-4o-mini", max_tokens=1024, logprobs=None, stream=False,
+    def query_gpt3(self, prompt, model="text-davinci-003", max_tokens=16, logprobs=None, stream=False,
                    stop=None, top_p=1, frequency_penalty=0, presence_penalty=0):
-
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_KEY_PERSONAL")
-        )
-
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system",
-                 "content": "You are a helpful assistant answering questions thoughtfully and concisely."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=top_p,
-            top_p=top_p,
-            frequency_penalty=frequency_penalty,
-            presence_penalty=presence_penalty,
-            max_tokens=max_tokens,
-            stop=stop,
-            stream=stream,
-        )
-
-        content = response.choices[0].message.content
-        return content
+        if model == "chatgpt":
+            messages = [{"role": "user", "content": p} for p in prompt]
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=self.temperature,
+            )
+        else:
+            response = openai.Completion.create(
+                model=model,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                logprobs=logprobs,
+                temperature=self.temperature,
+                stream=stream,
+                stop=stop,
+                top_p=top_p,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+                n=self.n_votes,
+            )
+        return response
 
     def forward(self, prompt, process_name):
         if not self.to_batch:
@@ -960,11 +952,69 @@ class GPT3Model(BaseModel):
         return ['gpt3_' + n for n in ['qa', 'guess', 'general']]
 
 
-from abc import ABC, abstractmethod
+# @cache.cache
+@backoff.on_exception(backoff.expo, Exception, max_tries=10)
+def codex_helper(extended_prompt):
+    FUNCTION_HEAD = "def execute_command(image) -> str:"
+    SYSTEM = f"Only answer with a Python function that starts with {FUNCTION_HEAD}"
+
+    assert 0 <= config.codex.temperature <= 1
+    assert 1 <= config.codex.best_of <= 20
+
+    if config.codex.model.startswith("gpt-4") or config.codex.model.startswith("gpt-3.5-turbo"):
+        if not isinstance(extended_prompt, list):
+            extended_prompt = [extended_prompt]
+        responses = [openai.ChatCompletion.create(
+            model=config.codex.model,
+            messages=[
+                # {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=config.codex.temperature,
+            max_tokens=config.codex.max_tokens,
+            top_p=1.,
+            frequency_penalty=0,
+            presence_penalty=0,
+            # best_of=config.codex.best_of,
+            stop=["\n\n"],
+        ) for prompt in extended_prompt]
+
+        resp = []
+        for r in responses:
+            text = r['choices'][0]['message']['content']
+            if FUNCTION_HEAD in text:
+                text = FUNCTION_HEAD + text.split(FUNCTION_HEAD)[1]
+            else:
+                text = FUNCTION_HEAD
+            if "```" in text:
+                text = text.split("```")[0]
+            resp.append(text)
+    else:
+        raise RuntimeError('OpenAI Codex is deprecated. Please use GPT-4 or GPT-3.5-turbo.')
+        # warnings.warn('OpenAI Codex is deprecated. Please use GPT-4 or GPT-3.5-turbo.')
+        # response = openai.Completion.create(
+        #     model="code-davinci-002",
+        #     temperature=config.codex.temperature,
+        #     prompt=extended_prompt,
+        #     max_tokens=config.codex.max_tokens,
+        #     top_p=1,
+        #     frequency_penalty=0,
+        #     presence_penalty=0,
+        #     best_of=config.codex.best_of,
+        #     stop=["\n\n"],
+        # )
+        #
+        # if isinstance(extended_prompt, list):
+        #     resp = [r['text'] for r in response['choices']]
+        # else:
+        #     resp = response['choices'][0]['text']
+
+    return resp
 
 
-class CodeGenModel(BaseModel, ABC):
-    name = 'generic_code_gen_dont_use'
+class CodexModel(BaseModel):
+    name = 'codex'
     requires_gpu = False
     max_batch_size = 5
 
@@ -972,14 +1022,14 @@ class CodeGenModel(BaseModel, ABC):
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
-        with open(config.code_gen.prompt) as f:
+        with open(config.codex.prompt) as f:
             self.base_prompt = f.read().strip()
         self.fixed_code = None
         if config.use_fixed_code:
             with open(config.fixed_code_file) as f:
                 self.fixed_code = f.read()
 
-    def forward(self, prompt, input_type='image', prompt_file=None, base_prompt=None, extra_context=None):
+    def forward(self, prompt, input_type='image', prompt_file=None, base_prompt=None, extra_context=''):
         if config.use_fixed_code:  # Use the same program for every sample, like in socratic models
             return [self.fixed_code] * len(prompt) if isinstance(prompt, list) else self.fixed_code
 
@@ -1007,302 +1057,248 @@ class CodeGenModel(BaseModel, ABC):
 
         return result
 
-    @abstractmethod
     def forward_(self, extended_prompt):
-        pass
-
-
-class OpenAIAPIClass(CodeGenModel):
-    name = 'openai'
-    requires_gpu = False
-    max_batch_size = 5
-
-    def __init__(self, gpu_number=0):
-        super().__init__(gpu_number=gpu_number)
-
-    def forward_(self, extended_prompt):
-        # extended_prompt is a batch of prompts
-
         if len(extended_prompt) > self.max_batch_size:
             response = []
             for i in range(0, len(extended_prompt), self.max_batch_size):
                 response += self.forward_(extended_prompt[i:i + self.max_batch_size])
             return response
-
         try:
-            from openai import OpenAI
-
-            client = OpenAI(
-                # api_key=os.getenv("OPENAI_KEY_PERSONAL")
-                # Xueqing's comment: please set OPENAI_KEY
-            )
-
-            responses = [
-                client.chat.completions.create(
-                    model=config.code_gen.specific_model,
-                    messages=[
-                        {"role": "system",
-                         "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=config.code_gen.temperature,
-                    top_p=config.code_gen.top_p,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                    stop=["\n```"],
-                )
-                for prompt in extended_prompt
-            ]
-
-            resp = [r.choices[0].message.content for r in responses]
-
-            # cleanup - ensure function bodies are returned.
-            """
-            Expected response is something like
-
-            ```python\ndef execute_command(video, possible_answers, query) -> [str, dict]:\n    video_segment = VideoSegment(video)\n    # Find the frame where the two men are playing the instrument\n    frame_of_interest = None\n    for i, frame in enumerate(video_segment.frame_iterator()):\n        if frame.exists("man") and frame.simple_query("Are the men playing an instrument?") == "yes":\n            frame_of_interest = frame\n            break\n    if frame_of_interest is None:\n        # Select frame at the middle of the video, as no temporal info is available\n        frame_of_interest = video_segment.frame_from_index(video_segment.num_frames // 2)\n    # Caption the frame\n    caption = frame_of_interest.simple_query("What is in the frame?")\n    # Determine how the men are playing the instrument\n    play_method = frame_of_interest.simple_query("How are the men playing the instrument?")\n    # Create the info dictionary\n    info = {\n        "Caption of frame with men playing instrument": caption,\n        "Method of playing detected": play_method\n    }\n    # Answer the query\n    answer = video_segment.select_answer(info, query, possible_answers)\n    return answer
-
-            so we need to strip first two lines. \n```follows but is excluded!
-            """
-
-            for i in range(len(resp)):
-                resp[i] = "\n".join(resp[i].splitlines()[2:])
-
-            if len(resp) == 1:
-                resp = resp[0]
-
+            response = codex_helper(extended_prompt)
+        except  openai.error.RateLimitError as e:
+            print("OpenAI error:", e)
+            print("Retrying Codex, splitting batch")
+            if len(extended_prompt) == 1:
+                warnings.warn("This is taking too long, maybe OpenAI is down? (status.openai.com/)")
+            # Will only be here after the number of retries in the backoff decorator.
+            # It probably means a single batch takes up the entire rate limit.
+            sub_batch_1 = extended_prompt[:len(extended_prompt) // 2]
+            sub_batch_2 = extended_prompt[len(extended_prompt) // 2:]
+            if len(sub_batch_1) > 0:
+                response_1 = self.forward_(sub_batch_1)
+            else:
+                response_1 = []
+            if len(sub_batch_2) > 0:
+                response_2 = self.forward_(sub_batch_2)
+            else:
+                response_2 = []
+            response = response_1 + response_2
         except Exception as e:
-            print("Openai request error!")
+            # Some other error like an internal OpenAI error
+            print("Retrying Codex")
             print(e)
-
-        #     if len(extended_prompt) == 1:
-        #         warnings.warn("This is taking too long, maybe OpenAI is down? (status.openai.com/)")
-        #     # Will only be here after the number of retries in the backoff decorator.
-        #     # It probably means a single batch takes up the entire rate limit.
-        #     sub_batch_1 = extended_prompt[:len(extended_prompt) // 2]
-        #     sub_batch_2 = extended_prompt[len(extended_prompt) // 2:]
-        #     if len(sub_batch_1) > 0:
-        #         response_1 = self.forward_(sub_batch_1)
-        #     else:
-        #         response_1 = []
-        #     if len(sub_batch_2) > 0:
-        #         response_2 = self.forward_(sub_batch_2)
-        #     else:
-        #         response_2 = []
-        #     response = response_1 + response_2
-        # except Exception as e:
-        #     print("Retrying Codex")
-        #     print(e)
-        #     response = self.forward_(extended_prompt)
-
-        return resp
+            response = self.forward_(extended_prompt)
+        return response
 
 
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
+@backoff.on_exception(backoff.expo, Exception, max_tries=10)
+def codex_helper_multiturn(extended_prompt):
+    FUNCTION_HEAD = extended_prompt[0][1].splitlines()[0]  # "def execute_command(image) -> str:"
+    SYSTEM = f"Only answer with a Python function that starts with {FUNCTION_HEAD}"
+
+    assert 0 <= config.codex.temperature <= 1
+    assert 1 <= config.codex.best_of <= 20
+    assert len(extended_prompt) % 2 == 1
+
+    if config.codex.model.startswith("gpt-4") or config.codex.model.startswith("gpt-3.5-turbo"):
+        if not isinstance(extended_prompt, list):
+            extended_prompt = [extended_prompt]
+
+        responses = []
+        for prompt in extended_prompt:
+            messages = [{"role": "system", "content": SYSTEM}, ]
+            for i, p in enumerate(prompt):
+                messages.append({"role": "user" if i % 2 == 0 else "assistant", "content": p})
+            responses.append(openai.ChatCompletion.create(
+                model=config.codex.model,
+                messages=messages,
+                temperature=config.codex.temperature,
+                max_tokens=config.codex.max_tokens,
+                top_p=1.,
+                frequency_penalty=0,
+                presence_penalty=0,
+                # best_of=config.codex.best_of,
+                # stop=["\n\n"],
+            ))
+
+        resp = []
+        for r in responses:
+            text = r['choices'][0]['message']['content']
+            if FUNCTION_HEAD in text:
+                text = FUNCTION_HEAD + text.split(FUNCTION_HEAD)[1]
+            else:
+                text = FUNCTION_HEAD
+            if "```" in text:
+                text = text.split("```")[0]  # QAQ...
+            resp.append(text)
+    else:
+        raise RuntimeError('OpenAI Codex is deprecated. Please use GPT-4 or GPT-3.5-turbo.')
+
+    return resp
 
 
-class KeywordStopCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, keywords):
-        super().__init__()
-        self.tokenizer = tokenizer
-        self.keywords = keywords
-        self.buffer = ""
-
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs):
-        new_token = self.tokenizer.decode(input_ids[0, -1], skip_special_tokens=True)
-        self.buffer += new_token
-        return any(keyword in self.buffer for keyword in self.keywords)
-
-
-class CodeLlamaClass(CodeGenModel):
-    name = 'codellama'
-    requires_gpu = True
-    max_batch_size = 3
-    load_order = 1
-
-    def __init__(self, gpu_number=0):
-        super().__init__(gpu_number=gpu_number)
-
-        self.specific_model = config.code_gen.specific_model
-        assert self.specific_model in ["codellama/CodeLlama-7b-hf", "codellama/CodeLlama-13b-hf"]
-
-        # Load tokenizer and model (CodeLlama-13B)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.specific_model)
-
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.specific_model,
-            load_in_4bit=True,  # 4-bit quantization to fit ~10-11GB VRAM
-            device_map="auto",  # Use up to 2 GPUs if needed
-            torch_dtype=torch.float16,
-        )
-
-    def forward_(self, extended_prompt):
-        from tqdm import tqdm
-
-        results = []
-        for prompt in tqdm(extended_prompt, desc="Generating completions"):
-            import pdb;
-            pdb.set_trace()
-
-            print(config.code_gen.max_new_tokens, config.code_gen.temperature, config.code_gen.top_p)
-
-            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.cuda()
-            stop_words = ["\ndef ", "\nclass ", "n@"]  # Customize if needed
-            stopping_criteria = StoppingCriteriaList([KeywordStopCriteria(self.tokenizer, stop_words)])
-            outputs = self.model.generate(
-                input_ids=input_ids,
-                max_new_tokens=config.code_gen.max_new_tokens,
-                # stopping_criteria=stopping_criteria,
-                do_sample=True,
-                temperature=config.code_gen.temperature,
-                top_p=config.code_gen.top_p,
-            )
-
-            # Decode
-            # outputs[0, len(input_ids[0]):]
-            result = self.tokenizer.decode(outputs[len(input_ids):], skip_special_tokens=True)
-            import pdb;
-            pdb.set_trace()
-
-            results.append(result)
-
-        import pdb;
-        pdb.set_trace()
-        return results
-
-
-class DeepSeekClass(CodeGenModel):
-    name = 'deepseek'
-    requires_gpu = True
-    max_batch_size = 3
-    load_order = 1
-
-    def __init__(self, gpu_number=0):
-        super().__init__(gpu_number=gpu_number)
-
-        # self.specific_model = config.code_gen.specific_model
-        # assert self.specific_model in ["deepseek-ai/DeepSeek-Coder-V2-Lite-Base"]
-
-        # # Load tokenizer and model (CodeLlama-13B)
-        # self.tokenizer = AutoTokenizer.from_pretrained(self.specific_model,
-        #                                                trust_remote_code=True)
-
-        # self.model = AutoModelForCausalLM.from_pretrained(
-        #     self.specific_model,
-        #     device_map="auto",
-        #     torch_dtype=torch.bfloat16,  # or bfloat16 if supported
-        #     trust_remote_code=True
-        # )
-
-    # Error in deepseek model: 'DynamicCache' object has no attribute 'get_max_length'
-    def forward_(self, extended_prompt):
-        from tqdm import tqdm
-
-        results = []
-        for prompt in tqdm(extended_prompt, desc="Generating completions"):
-            print(config.code_gen.max_new_tokens, config.code_gen.temperature, config.code_gen.top_p)
-
-            self.dev = torch.device("cuda:0")  # or any other device index
-
-            tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", trust_remote_code=True)
-            model = AutoModelForCausalLM.from_pretrained(
-                "deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
-                trust_remote_code=True,
-                torch_dtype=torch.float16
-            ).to(self.dev)
-
-            input_text = "# write a quick sort algorithm"
-            inputs = tokenizer(input_text, return_tensors="pt").to(self.dev)
-            outputs = model.generate(**inputs, max_new_tokens=128)
-            print(tokenizer.decode(outputs[0], skip_special_tokens=True))
-
-            # inputs = self.tokenizer(prompt, return_tensors="pt")
-            # outputs = self.model.generate(**inputs, 
-            #                             #   max_new_tokens=config.code_gen.max_new_tokens,
-            #                               do_sample=True,
-            #                               temperature=config.code_gen.temperature,
-            #                               top_p=config.code_gen.top_p,
-            #                               )
-            # print(self.tokenizer.decode(outputs[0], skip_special_tokens=True)[len(prompt):])
-            # input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.cuda()
-            # stop_words = ["\ndef ", "\nclass ", "n@"]  # Customize if needed
-            # stopping_criteria = StoppingCriteriaList([KeywordStopCriteria(self.tokenizer, stop_words)])
-            # outputs = self.model.generate(
-            #     input_ids=input_ids,
-            #     max_new_tokens=config.code_gen.max_new_tokens,
-            #     # stopping_criteria=stopping_criteria,
-            #     do_sample=True,
-            #     temperature=config.code_gen.temperature,
-            #     top_p=config.code_gen.top_p,
-            # )
-
-            # Decode
-            # result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            import pdb;
-            pdb.set_trace()
-
-            results.append(result)
-
-        import pdb;
-        pdb.set_trace()
-        return results
-
-
-class CodeLlama(CodeGenModel):
-    name = 'codellama_old'
-    requires_gpu = True
-    max_batch_size = 3
-    load_order = 1  # Load this model last
+class MultiTurnCodexModel(CodexModel):
+    name = 'multiturn_codex'
+    requires_gpu = False
+    max_batch_size = 5
 
     # Not batched, but every call will probably be a batch (coming from the same process)
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
+        with open(config.codex.prompt) as f:
+            self.base_prompt = f.read().strip().split("<<<<SPLIT>>>>")
+        self.fixed_code = None
+        if config.use_fixed_code:
+            with open(config.fixed_code_file) as f:
+                self.fixed_code = f.read()
 
-        from transformers import LlamaForCausalLM, CodeLlamaTokenizer
+    def forward(self, prompt, input_type='image', prompt_file=None, base_prompt=None, extra_context=''):
+        if config.use_fixed_code:  # Use the same program for every sample, like in socratic models
+            return [self.fixed_code] * len(prompt) if isinstance(prompt, list) else self.fixed_code
+
+        if prompt_file is not None and base_prompt is None:  # base_prompt takes priority
+            with open(prompt_file) as f:
+                base_prompt = f.read().strip()
+        elif base_prompt is None:
+            base_prompt = self.base_prompt.split("<<<<SPLIT>>>>")
+
+        def process_prompt(prompt, input_type, extra_context):
+            return [x.replace("INSERT_QUERY_HERE", prompt).
+                    replace('INSERT_TYPE_HERE', input_type).
+                    replace('EXTRA_CONTEXT_HERE', extra_context) for x in base_prompt]
+
+        if isinstance(prompt, list):
+            extended_prompt = [process_prompt(p, input_type, str(ec)) for p, ec in zip(prompt, extra_context)]
+        elif isinstance(prompt, str):
+            extended_prompt = [process_prompt(prompt, input_type, extra_context), ]
+        else:
+            raise TypeError("prompt must be a string or a list of strings")
+
+        result = self.forward_(extended_prompt)
+        if not isinstance(prompt, list):
+            result = result[0]
+
+        return result
+
+    def forward_(self, extended_prompt):
+        if len(extended_prompt) > self.max_batch_size:
+            response = []
+            for i in range(0, len(extended_prompt), self.max_batch_size):
+                response += self.forward_(extended_prompt[i:i + self.max_batch_size])
+            return response
+        try:
+            response = codex_helper_multiturn(extended_prompt)
+        except openai.error.RateLimitError as e:
+            print("Retrying Codex, splitting batch")
+            if len(extended_prompt) == 1:
+                warnings.warn("This is taking too long, maybe OpenAI is down? (status.openai.com/)")
+            # Will only be here after the number of retries in the backoff decorator.
+            # It probably means a single batch takes up the entire rate limit.
+            sub_batch_1 = extended_prompt[:len(extended_prompt) // 2]
+            sub_batch_2 = extended_prompt[len(extended_prompt) // 2:]
+            if len(sub_batch_1) > 0:
+                response_1 = self.forward_(sub_batch_1)
+            else:
+                response_1 = []
+            if len(sub_batch_2) > 0:
+                response_2 = self.forward_(sub_batch_2)
+            else:
+                response_2 = []
+            response = response_1 + response_2
+        except Exception as e:
+            # Some other error like an internal OpenAI error
+            print("Retrying Codex")
+            print(e)
+            response = self.forward_(extended_prompt)
+        return response
+
+
+class CodeLlama(CodexModel):
+    name = 'codellama'
+    requires_gpu = True
+    # max_batch_size = 3
+    load_order = 1  # Load this model last
+
+    # Not batched, but every call will probably be a batch (coming from the same process)
+
+    FUNCTION_HEAD = "def execute_command(image):"
+    SYSTEM = f"Only answer with a Python function that starts with {FUNCTION_HEAD}"
+
+    def __init__(self, gpu_number=0):
+        super().__init__(gpu_number=gpu_number)
+        self.max_batch_size = config.codex.max_batch_size
+        self.max_new_tokens = config.codex.max_new_tokens
+
+        from vllm import LLM
 
         # Load Llama2
-        model_id = config.code_gen.codellama_model_name
+        model_id = config.codex.codellama_model_name
 
-        if model_id.startswith('/'):
-            assert os.path.exists(model_id), \
-                f'Model path {model_id} does not exist. If you use the model ID it will be downloaded automatically'
+        if not os.path.exists(model_id) and os.path.isdir(model_id):
+            assert model_id in [
+                'codellama/CodeLlama-7b-hf', 'codellama/CodeLlama-13b-hf', 'codellama/CodeLlama-34b-hf',
+                'codellama/CodeLlama-7b-Python-hf', 'codellama/CodeLlama-13b-Python-hf',
+                'codellama/CodeLlama-34b-Python-hf', 'codellama/CodeLlama-7b-Instruct-hf',
+                'codellama/CodeLlama-13b-Instruct-hf', 'codellama/CodeLlama-34b-Instruct-hf',
+                'codellama/CodeLlama-70b-Python-hf', 'deepseek-ai/deepseek-coder-33b-base',
+            ]
+        # Note: 70b-Instruct-hf has special formatting, will handle in the future
+        self.is_instruct = 'Instruct' in model_id
+        self.llm = LLM(model=model_id, dtype='bfloat16', tensor_parallel_size=torch.cuda.device_count(),
+                       max_model_len=20000)
+        # max_num_batched_tokens=20000, download_dir=os.path.join(os.environ['HOME'], 'tmp/vllm-cache'))
+        self.sampling_params = self.get_sampling_params()
+
+    def get_sampling_params(self):
+        from vllm import SamplingParams
+
+        if config.codex.overgenerate:
+            num_return_sequences = config.codex.overgenerate_num
+            assert num_return_sequences > 1
+            assert config.codex.do_sample
         else:
-            assert model_id in ['codellama/CodeLlama-7b-hf', 'codellama/CodeLlama-13b-hf', 'codellama/CodeLlama-34b-hf',
-                                'codellama/CodeLlama-7b-Python-hf', 'codellama/CodeLlama-13b-Python-hf',
-                                'codellama/CodeLlama-34b-Python-hf', 'codellama/CodeLlama-7b-Instruct-hf',
-                                'codellama/CodeLlama-13b-Instruct-hf', 'codellama/CodeLlama-34b-Instruct-hf']
-        self.tokenizer = CodeLlamaTokenizer.from_pretrained(model_id)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenizer.padding_side = 'left'
+            num_return_sequences = 1
 
-        # Compute this when the other models have already been loaded
-        # Ignore gpu number
-        usage_ratio = 0.15  # If it is small, it will use more GPUs, which will allow larger batch sizes
-        leave_empty = 0.7  # If other models are using more than (1-leave_empty) of memory, do not use
-        max_memory = {}
-        for gpu_number in range(torch.cuda.device_count()):
-            mem_available = torch.cuda.mem_get_info(f'cuda:{gpu_number}')[0]
-            if mem_available <= leave_empty * torch.cuda.get_device_properties(gpu_number).total_memory:
-                mem_available = 0
-            max_memory[gpu_number] = mem_available * usage_ratio
-            if gpu_number == 0:
-                max_memory[gpu_number] /= 10
-        self.model = LlamaForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=torch.float16,
-            # load_in_8bit=True,  # For some reason this results in OOM when doing forward pass
-            device_map="sequential",
-            max_memory=max_memory,
+        return SamplingParams(
+            n=num_return_sequences,
+            temperature=config.codex.temperature if config.codex.do_sample else 0.0,
+            top_p=getattr(config.codex, 'top_p', 1.0),
+            max_tokens=config.codex.max_new_tokens,
+            stop=["\n\n"],
         )
-        self.model.eval()
 
     def run_codellama(self, prompt):
-        input_ids = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)["input_ids"]
-        generated_ids = self.model.generate(input_ids.to("cuda"), max_new_tokens=128)
-        generated_ids = generated_ids[:, input_ids.shape[-1]:]
-        generated_text = [self.tokenizer.decode(gen_id, skip_special_tokens=True) for gen_id in generated_ids]
-        generated_text = [text.split('\n\n')[0] for text in generated_text]
+        if self.is_instruct:
+            B_INST, E_INST = "[INST]", "[/INST]"
+            B_SYS, E_SYS = "<<SYS>>\n", "\n<</SYS>>\n\n"
+
+            prompt = [B_SYS + self.SYSTEM + E_SYS + p for p in prompt]
+            prompt = [f"{B_INST} {p.strip()} {E_INST}" for p in prompt]
+
+        outputs = self.llm.generate(prompt, self.sampling_params, use_tqdm=getattr(config.codex, 'use_tqdm', False))
+        generated_text = [[o.text for o in output.outputs] for output in outputs]
+
+        if self.is_instruct:  # ridiculous.
+            generated_text_ = []
+            for texts in generated_text:
+                generated_text_.append([])
+                for text in texts:
+                    if self.FUNCTION_HEAD in text:
+                        text = self.FUNCTION_HEAD + text.split(self.FUNCTION_HEAD)[1]
+                    else:
+                        text = self.FUNCTION_HEAD
+                    if "```" in text:
+                        text = text.split("```")[0]
+                    generated_text_[-1].append(text)
+            generated_text = generated_text_
+        generated_text = [[text.split('\n\n')[0] for text in texts] for texts in generated_text]
+
+        if config.codex.overgenerate:
+            assert all(len(texts) == config.codex.overgenerate_num for texts in generated_text)
+        else:
+            assert all(len(texts) == 1 for texts in generated_text)
+            generated_text = [texts[0] for texts in generated_text]
         return generated_text
 
     def forward_(self, extended_prompt):
@@ -1314,8 +1310,104 @@ class CodeLlama(CodeGenModel):
         with torch.no_grad():
             response = self.run_codellama(extended_prompt)
         # Clear GPU memory
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         return response
+
+
+# class MultiTurnCodeLlama(MultiTurnCodexModel):
+#     name = 'multiturn_codellama'
+#     requires_gpu = True
+#     # max_batch_size = 3
+#     load_order = 1  # Load this model last
+#
+#     # Not batched, but every call will probably be a batch (coming from the same process)
+#
+#     FUNCTION_HEAD = "def execute_command(image):"
+#     SYSTEM = f"Only answer with a Python function that starts with {FUNCTION_HEAD}"
+#
+#     def __init__(self, gpu_number=0):
+#         super().__init__(gpu_number=gpu_number)
+#         self.max_batch_size = config.codex.max_batch_size
+#         self.max_new_tokens = config.codex.max_new_tokens
+#
+#         from transformers import LlamaForCausalLM, CodeLlamaTokenizer
+#
+#         # Load Llama2
+#         model_id = config.codex.codellama_model_name
+#
+#         if not os.path.exists(model_id) and os.path.isdir(model_id):
+#             assert model_id in [
+#                 'codellama/CodeLlama-7b-Instruct-hf', 'codellama/CodeLlama-13b-Instruct-hf',
+#                 'codellama/CodeLlama-34b-Instruct-hf',
+#             ]
+#         # Note: 70b-Instruct-hf has special formatting, will handle in the future
+#         self.tokenizer = CodeLlamaTokenizer.from_pretrained(model_id)
+#         self.tokenizer.pad_token = self.tokenizer.eos_token
+#         self.tokenizer.padding_side = 'left'
+#
+#         self.model = LlamaForCausalLM.from_pretrained(
+#             model_id,
+#             torch_dtype=torch.float16,
+#             device_map="auto",
+#         )
+#         self.model.eval()
+#
+#         self.generation_config = self.get_generation_config()
+#
+#     def get_generation_config(self):
+#         from transformers import GenerationConfig
+#
+#         if config.codex.overgenerate:
+#             num_return_sequences = config.codex.overgenerate_num
+#             assert num_return_sequences > 1
+#             assert config.codex.do_sample
+#         else:
+#             num_return_sequences = 1
+#
+#         kwargs = {}
+#         if config.codex.do_sample:
+#             kwargs = dict(do_sample=True, top_p=config.codex.top_p, temperature=config.codex.temperature)
+#
+#         return GenerationConfig(
+#             eos_token_id=self.tokenizer.eos_token_id,
+#             pad_token_id=self.tokenizer.pad_token_id,
+#             max_new_tokens=self.max_new_tokens,
+#             num_return_sequences=num_return_sequences,
+#             **kwargs
+#         )
+#
+#     def run_codellama(self, prompt):
+#         input_ids = []
+#         for messages in prompt:
+#             messages = [{'role': 'user' if i % 2 == 0 else 'assistant', 'content': m} for i, m in enumerate(messages)]
+#             input_ids.append(self.tokenizer.apply_chat_template(messages))
+#
+#         batch = self.tokenizer.pad({'input_ids': input_ids}, return_tensors='pt')
+#         input_ids = batch["input_ids"]
+#         attention_mask = batch["attention_mask"]
+#         generated_ids = self.model.generate(
+#             input_ids.to("cuda"), attention_mask=attention_mask.to("cuda"), generation_config=self.generation_config,
+#         )
+#         generated_ids = generated_ids[:, input_ids.shape[-1]:]
+#         generated_text = [self.tokenizer.decode(gen_id, skip_special_tokens=True).strip() for gen_id in generated_ids]
+#
+#         if config.codex.overgenerate:
+#             return [generated_text[i: i + config.codex.overgenerate_num] for i in
+#                     range(0, len(generated_text), config.codex.overgenerate_num)]
+#         else:
+#             return generated_text
+#
+#     def forward_(self, extended_prompt):
+#         if len(extended_prompt) > self.max_batch_size:
+#             response = []
+#             for i in range(0, len(extended_prompt), self.max_batch_size):
+#                 response += self.forward_(extended_prompt[i:i + self.max_batch_size])
+#             return response
+#         with torch.no_grad():
+#             response = self.run_codellama(extended_prompt)
+#         # Clear GPU memory
+#         # torch.cuda.empty_cache()
+#         return response
 
 
 class BLIPModel(BaseModel):
@@ -1337,7 +1429,8 @@ class BLIPModel(BaseModel):
 
         with warnings.catch_warnings(), HiddenPrints("BLIP"), torch.cuda.device(self.dev):
             max_memory = {gpu_number: torch.cuda.mem_get_info(self.dev)[0]}
-            self.processor = Blip2Processor.from_pretrained(f"Salesforce/{blip_v2_model_type}", force_download=True)
+
+            self.processor = Blip2Processor.from_pretrained(f"Salesforce/{blip_v2_model_type}")
             # Device_map must be sequential for manual GPU selection
             try:
                 self.model = Blip2ForConditionalGeneration.from_pretrained(
@@ -1361,12 +1454,13 @@ class BLIPModel(BaseModel):
     @torch.no_grad()
     def caption(self, image, prompt=None):
         inputs = self.processor(images=image, text=prompt, return_tensors="pt").to(self.dev, torch.float16)
-        generated_ids = self.model.generate(**inputs, length_penalty=1., num_beams=5, max_length=30, min_length=1,
-                                            do_sample=False, top_p=0.9, repetition_penalty=1.0,
-                                            num_return_sequences=1, temperature=1)
-        generated_text = [cap.strip() for cap in
-                          self.processor.batch_decode(generated_ids, skip_special_tokens=True)]
-        return generated_text
+        generation_output = self.model.generate(**inputs, length_penalty=1., num_beams=5, max_length=30, min_length=1,
+                                                do_sample=False, top_p=0.9, repetition_penalty=1.0,
+                                                num_return_sequences=1, temperature=1,
+                                                return_dict_in_generate=True, output_scores=True)
+        generated_text = [cap.strip() for cap in self.processor.batch_decode(
+            generation_output.sequences, skip_special_tokens=True)]
+        return generated_text, generation_output.sequences_scores.cpu().numpy().tolist()
 
     def pre_question(self, question):
         # from LAVIS blip_processors
@@ -1389,12 +1483,12 @@ class BLIPModel(BaseModel):
         inputs = self.processor(images=image, text=question, return_tensors="pt", padding="longest").to(self.dev)
         if self.half_precision:
             inputs['pixel_values'] = inputs['pixel_values'].half()
-        generated_ids = self.model.generate(**inputs, length_penalty=-1, num_beams=5, max_length=10, min_length=1,
-                                            do_sample=False, top_p=0.9, repetition_penalty=1.0,
-                                            num_return_sequences=1, temperature=1)
-        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)
-
-        return generated_text
+        generation_output = self.model.generate(**inputs, length_penalty=-1, num_beams=5, max_length=10, min_length=1,
+                                                do_sample=False, top_p=0.9, repetition_penalty=1.0,
+                                                num_return_sequences=1, temperature=1,
+                                                return_dict_in_generate=True, output_scores=True)
+        generated_text = self.processor.batch_decode(generation_output.sequences, skip_special_tokens=True)
+        return generated_text, generation_output.sequences_scores.cpu().numpy().tolist()
 
     def forward(self, image, question=None, task='caption'):
         if not self.to_batch:
@@ -1409,15 +1503,15 @@ class BLIPModel(BaseModel):
         images_caption = [im for i, im in enumerate(image) if task[i] == 'caption']
 
         with torch.cuda.device(self.dev):
-            response_qa = self.qa(images_qa, prompts_qa) if len(images_qa) > 0 else []
-            response_caption = self.caption(images_caption) if len(images_caption) > 0 else []
+            response_qa, scores_qa = self.qa(images_qa, prompts_qa) if len(images_qa) > 0 else ([], [])
+            response_caption, scores_caption = self.caption(images_caption) if len(images_caption) > 0 else ([], [])
 
         response = []
         for t in task:
             if t == 'qa':
-                response.append(response_qa.pop(0))
+                response.append([response_qa.pop(0), scores_qa.pop(0)])
             else:
-                response.append(response_caption.pop(0))
+                response.append([response_caption.pop(0), scores_caption.pop(0)])
 
         if not self.to_batch:
             response = response[0]

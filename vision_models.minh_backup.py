@@ -5,24 +5,26 @@ process(name, *args, **kwargs), where *args and **kwargs are the arguments of th
 """
 
 import abc
+import backoff
 import contextlib
+import openai
 import os
 import re
 import timeit
-import warnings
-from collections import Counter
-from functools import partial
-from itertools import chain
-from typing import List, Union
-
 import torch
 import torchvision
+import warnings
 from PIL import Image
+from collections import Counter
+from contextlib import redirect_stdout
+from functools import partial
+from itertools import chain
 from joblib import Memory
 from rich.console import Console
 from torch import hub
 from torch.nn import functional as F
 from torchvision import transforms
+from typing import List, Union
 
 from configs import config
 from utils import HiddenPrints
@@ -876,8 +878,6 @@ class GPT3Model(BaseModel):
     #     return response
 
     def get_general(self, prompts) -> list[str]:
-        import pdb
-        pdb.set_trace()
         results = []
         for p in prompts:
             r = self.query_gpt3(p, model=self.model, max_tokens=1024, top_p=1, frequency_penalty=0, presence_penalty=0)
@@ -885,18 +885,18 @@ class GPT3Model(BaseModel):
         return results
 
     def query_gpt3(self, prompt, model="gpt-4o-mini", max_tokens=1024, logprobs=None, stream=False,
-                   stop=None, top_p=1, frequency_penalty=0, presence_penalty=0):
+               stop=None, top_p=1, frequency_penalty=0, presence_penalty=0):
 
         from openai import OpenAI
         client = OpenAI(
-            api_key=os.getenv("OPENAI_KEY_PERSONAL")
+        api_key=os.getenv("OPENAI_KEY_PERSONAL")
         )
+        
 
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system",
-                 "content": "You are a helpful assistant answering questions thoughtfully and concisely."},
+                {"role": "system", "content": "You are a helpful assistant answering questions thoughtfully and concisely."},
                 {"role": "user", "content": prompt}
             ],
             temperature=top_p,
@@ -959,9 +959,7 @@ class GPT3Model(BaseModel):
     def list_processes(cls):
         return ['gpt3_' + n for n in ['qa', 'guess', 'general']]
 
-
 from abc import ABC, abstractmethod
-
 
 class CodeGenModel(BaseModel, ABC):
     name = 'generic_code_gen_dont_use'
@@ -1006,11 +1004,10 @@ class CodeGenModel(BaseModel, ABC):
             result = result[0]
 
         return result
-
+    
     @abstractmethod
     def forward_(self, extended_prompt):
         pass
-
 
 class OpenAIAPIClass(CodeGenModel):
     name = 'openai'
@@ -1019,8 +1016,9 @@ class OpenAIAPIClass(CodeGenModel):
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
-
+    
     def forward_(self, extended_prompt):
+
         # extended_prompt is a batch of prompts
 
         if len(extended_prompt) > self.max_batch_size:
@@ -1028,21 +1026,18 @@ class OpenAIAPIClass(CodeGenModel):
             for i in range(0, len(extended_prompt), self.max_batch_size):
                 response += self.forward_(extended_prompt[i:i + self.max_batch_size])
             return response
-
         try:
-            from openai import OpenAI
 
+            from openai import OpenAI
             client = OpenAI(
-                # api_key=os.getenv("OPENAI_KEY_PERSONAL")
-                # Xueqing's comment: please set OPENAI_KEY
+                api_key=os.getenv("OPENAI_KEY_PERSONAL")
             )
 
             responses = [
                 client.chat.completions.create(
                     model=config.code_gen.specific_model,
                     messages=[
-                        {"role": "system",
-                         "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
+                        {"role": "system", "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=config.code_gen.temperature,
@@ -1054,8 +1049,9 @@ class OpenAIAPIClass(CodeGenModel):
                 for prompt in extended_prompt
             ]
 
-            resp = [r.choices[0].message.content for r in responses]
 
+            resp = [r.choices[0].message.content for r in responses]
+            
             # cleanup - ensure function bodies are returned.
             """
             Expected response is something like
@@ -1067,14 +1063,12 @@ class OpenAIAPIClass(CodeGenModel):
 
             for i in range(len(resp)):
                 resp[i] = "\n".join(resp[i].splitlines()[2:])
-
+            
             if len(resp) == 1:
                 resp = resp[0]
 
-        except Exception as e:
-            print("Openai request error!")
-            print(e)
-
+        except openai.error.RateLimitError as e:
+            print("Rate Limit error! We don't handle this.")
         #     if len(extended_prompt) == 1:
         #         warnings.warn("This is taking too long, maybe OpenAI is down? (status.openai.com/)")
         #     # Will only be here after the number of retries in the backoff decorator.
@@ -1097,10 +1091,7 @@ class OpenAIAPIClass(CodeGenModel):
 
         return resp
 
-
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
-
-
 class KeywordStopCriteria(StoppingCriteria):
     def __init__(self, tokenizer, keywords):
         super().__init__()
@@ -1113,7 +1104,6 @@ class KeywordStopCriteria(StoppingCriteria):
         self.buffer += new_token
         return any(keyword in self.buffer for keyword in self.keywords)
 
-
 class CodeLlamaClass(CodeGenModel):
     name = 'codellama'
     requires_gpu = True
@@ -1122,7 +1112,7 @@ class CodeLlamaClass(CodeGenModel):
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
-
+        
         self.specific_model = config.code_gen.specific_model
         assert self.specific_model in ["codellama/CodeLlama-7b-hf", "codellama/CodeLlama-13b-hf"]
 
@@ -1136,13 +1126,14 @@ class CodeLlamaClass(CodeGenModel):
             torch_dtype=torch.float16,
         )
 
+    
     def forward_(self, extended_prompt):
         from tqdm import tqdm
 
         results = []
         for prompt in tqdm(extended_prompt, desc="Generating completions"):
-            import pdb;
-            pdb.set_trace()
+            
+            import pdb; pdb.set_trace()
 
             print(config.code_gen.max_new_tokens, config.code_gen.temperature, config.code_gen.top_p)
 
@@ -1161,16 +1152,13 @@ class CodeLlamaClass(CodeGenModel):
             # Decode
             # outputs[0, len(input_ids[0]):]
             result = self.tokenizer.decode(outputs[len(input_ids):], skip_special_tokens=True)
-            import pdb;
-            pdb.set_trace()
+            import pdb; pdb.set_trace()
 
             results.append(result)
 
-        import pdb;
-        pdb.set_trace()
+        import pdb; pdb.set_trace()
         return results
-
-
+    
 class DeepSeekClass(CodeGenModel):
     name = 'deepseek'
     requires_gpu = True
@@ -1179,7 +1167,7 @@ class DeepSeekClass(CodeGenModel):
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
-
+        
         # self.specific_model = config.code_gen.specific_model
         # assert self.specific_model in ["deepseek-ai/DeepSeek-Coder-V2-Lite-Base"]
 
@@ -1200,6 +1188,7 @@ class DeepSeekClass(CodeGenModel):
 
         results = []
         for prompt in tqdm(extended_prompt, desc="Generating completions"):
+
             print(config.code_gen.max_new_tokens, config.code_gen.temperature, config.code_gen.top_p)
 
             self.dev = torch.device("cuda:0")  # or any other device index
@@ -1215,6 +1204,7 @@ class DeepSeekClass(CodeGenModel):
             inputs = tokenizer(input_text, return_tensors="pt").to(self.dev)
             outputs = model.generate(**inputs, max_new_tokens=128)
             print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+
 
             # inputs = self.tokenizer(prompt, return_tensors="pt")
             # outputs = self.model.generate(**inputs, 
@@ -1238,15 +1228,13 @@ class DeepSeekClass(CodeGenModel):
 
             # Decode
             # result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            import pdb;
-            pdb.set_trace()
+            import pdb; pdb.set_trace()
 
             results.append(result)
 
-        import pdb;
-        pdb.set_trace()
+        import pdb; pdb.set_trace()
         return results
-
+        
 
 class CodeLlama(CodeGenModel):
     name = 'codellama_old'

@@ -1,18 +1,16 @@
 import json
 import os
 
-import pandas as pd
-from torch.utils.data import Dataset
 import decord
-from decord import cpu, gpu
-import numpy as np
-import spacy
-
-from nltk.tokenize import word_tokenize
-from nltk.corpus import wordnet
-import numpy as np
-
 import nltk
+import numpy as np
+import pandas as pd
+import spacy
+from decord import cpu
+from nltk.corpus import wordnet
+from nltk.tokenize import word_tokenize
+from torch.utils.data import Dataset
+
 nltk.download('averaged_perceptron_tagger_eng')
 nltk.download('wordnet')
 nltk.download('punkt_tab')
@@ -26,7 +24,7 @@ def load_file(file_name):
     if os.path.splitext(file_name)[-1] == '.csv':
         return pd.read_csv(file_name)
     with open(file_name, 'r') as fp:
-        if os.path.splitext(file_name)[1]== '.txt':
+        if os.path.splitext(file_name)[1] == '.txt':
             annos = fp.readlines()
             annos = [line.rstrip() for line in annos]
         if os.path.splitext(file_name)[1] == '.json':
@@ -55,7 +53,6 @@ class NExTQADataset(Dataset):
                  max_num_frames=30, start_sample=0, **kwargs):
 
         assert version in ['openended', 'multiplechoice']
-        directory = 'nextqa' if version == 'multiplechoice' else 'nextoe'
 
         self.split = split
         self.data_path = data_path
@@ -65,38 +62,31 @@ class NExTQADataset(Dataset):
         self.input_type = 'video'
         self.max_num_frames = max_num_frames
 
-        # sample_list_path = os.path.join(self.data_path, directory, f'{split}.csv')
-        sample_list_path = os.path.join("/local/minh/VIPER/datasets/NExTVideo/csvs/", f'{split}.csv')
+        sample_list_path = os.path.join(self.data_path, f'csvs/{split}.csv')
+        # sample_list_path = os.path.join("/local/minh/VIPER/datasets/NExTVideo/csvs/", f'{split}.csv')
         self.sample_list = load_file(sample_list_path)
-        
+
         if max_samples is not None:
-            end = start_sample+max_samples
+            end = start_sample + max_samples
             print(f'Subset requested. Only selecting from {start_sample} to {end}')
             # self.sample_list = self.sample_list.sample(n=max_samples)
             self.sample_list = self.sample_list[start_sample:end]
             print(self.sample_list)
 
-
         self.sample_ids = self.sample_list.index
         self.sample_id_to_index = {sample_id: idx for idx, sample_id in enumerate(self.sample_ids)}
 
         self.video_to_dir = {}
-        # for directory in os.listdir(os.path.join(self.data_path, 'videos')):
-        #     for video in os.listdir(os.path.join(self.data_path, 'videos', directory)):
-        #         self.video_to_dir[video.split('.')[0]] = directory
-        
         self.data_path = os.path.expandvars(self.data_path)
-        self.data_path = os.path.expanduser(self.data_path)
-
-        for directory in os.listdir(self.data_path):
-            for video in os.listdir(os.path.join(self.data_path, directory)):
+        for directory in os.listdir(os.path.join(self.data_path, 'NExTVideo')):
+            for video in os.listdir(os.path.join(self.data_path, 'NExTVideo', directory)):
                 self.video_to_dir[video.split('.')[0]] = directory
 
     def get_sample_path(self, index):
         sample_id = self.sample_ids[index]
         cur_sample = self.sample_list.loc[sample_id]
         video_name = str(cur_sample['video'])
-        video_path = os.path.join(self.data_path, 'videos', self.video_to_dir[video_name], video_name + '.mp4')
+        video_path = os.path.join(self.data_path, 'NExTVideo', self.video_to_dir[video_name], video_name + '.mp4')
         return video_path
 
     def get_video(self, video_path):
@@ -121,7 +111,7 @@ class NExTQADataset(Dataset):
             question = self.tokenize(question)
 
         video_name = str(cur_sample['video'])
-        video_path = os.path.join(self.data_path, self.video_to_dir[video_name], video_name + '.mp4')
+        video_path = os.path.join(self.data_path, 'NExTVideo', self.video_to_dir[video_name], video_name + '.mp4')
         video = self.get_video(video_path)
 
         if self.version == 'openended':
@@ -149,6 +139,8 @@ class NExTQADataset(Dataset):
         return self.sample_id_to_index[sample_id]
 
     def accuracy(self, prediction, ground_truth, possible_answers, query_type):
+        import pdb
+        pdb.set_trace()  # why this slow?
         """
         Args:
             prediction (list): List of predicted answers.
@@ -196,7 +188,8 @@ class NExTQADataset(Dataset):
                         else:
                             p = c[0]
                 if p not in a:
-                    import pdb; pdb.set_trace()
+                    # import pdb
+                    # pdb.set_trace()
 
                     if p is None:
                         print('None case')  # Should not happen
@@ -224,7 +217,6 @@ stopwords = "i, me, my, myself, we, our, ours, ourselves, you, you're, you've, y
 
 
 def remove_stop(sentence):
-
     words = lemmatize_sentence(sentence)
     words = [w for w in words if not w in stopwords]
     return ' '.join(words)
@@ -249,13 +241,13 @@ def wup(word1, word2, alpha):
     w2_len = len(w2)
     if w2_len == 0: return 0.0
 
-    #match the first
+    # match the first
     word_sim = w1[0].wup_similarity(w2[0])
     if word_sim is None:
         word_sim = 0.0
 
     if word_sim < alpha:
-        word_sim = 0.1*word_sim
+        word_sim = 0.1 * word_sim
     return word_sim
 
 

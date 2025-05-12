@@ -1,5 +1,5 @@
-multiprocessing: True
-execute_code: False
+multiprocessing: False  # True
+execute_code: True
 
 dataset:
   data_path: /home/xueqing.wu/data/NExTVideo/
@@ -9,7 +9,7 @@ dataset:
   fps: 1
   max_num_frames: 30
   split: val
-  batch_size: 32
+  batch_size: 1
   max_samples: 10
 
 #codex:
@@ -29,15 +29,5 @@ results_dir: ./results/nextqa/
 gpt3:
   model: gpt-4o-mini-2024-07-18
 
-load_models: # which code-running stage models to load
-  maskrcnn: False
-  clip: False
-  glip: False
-  owlvit: False
-  tcl: False
-  gpt3_qa: True
-  gpt3_general: True
-  depth: False
-  blip: False
-  saliency: False
-  xvlm: False
+use_cached_codex: True
+cached_codex_path: results/nextqa/val/results_0.csv

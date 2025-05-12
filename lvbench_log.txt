@@ -1,0 +1,52 @@
+2025-05-12 04:49:17.951657: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1747050557.972779 2927033 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1747050557.979573 2927033 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1747050557.998123 2927033 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1747050557.998160 2927033 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1747050557.998164 2927033 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1747050557.998167 2927033 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2025-05-12 04:49:18.003318: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+The `load_in_4bit` and `load_in_8bit` arguments are deprecated and will be removed in the future versions. Please, pass a `BitsAndBytesConfig` object in `quantization_config` argument instead.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:02<00:02,  2.72s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:04<00:00,  2.04s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:04<00:00,  2.14s/it]
+Using cache found in /local3/minhtr/.cache/torch/hub/intel-isl_MiDaS_master
+Using cache found in /local3/minhtr/.cache/torch/hub/intel-isl_MiDaS_master
+Warming up PyWSD (takes ~10 secs)... took 6.41316294670105 secs.
+VISION BACKBONE USE GRADIENT CHECKPOINTING:  False
+LANGUAGE BACKBONE USE GRADIENT CHECKPOINTING:  False
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+EARLY FUSION ON, USING MHA-B
+Subset requested. Only selecting from 0 to 1500
+            video  ...                                                 a3
+0     Cm73ma6Ibcs  ...                                               1633
+1     Cm73ma6Ibcs  ...                                              Rainy
+2     Cm73ma6Ibcs  ...  The protagonist pushes the table aside and sta...
+3     Cm73ma6Ibcs  ...  The protagonist breaks the windows with her sw...
+4     Cm73ma6Ibcs  ...                                                  1
+...           ...  ...                                                ...
+1471  20lTg3yUrO4  ...                        Lagos Market Fire Aftermath
+1472  20lTg3yUrO4  ...                           Ogbonnaya Onu dies at 72
+1473  20lTg3yUrO4  ...                                              Black
+1474  20lTg3yUrO4  ...                                        Peter Odili
+1475  20lTg3yUrO4  ...  First, the news was introduced by the host in ...
+
+[1476 rows x 11 columns]
+  0%|          | 0/738 [00:00<?, ?it/s]Tensorizing new video. let's check RAM usage -- should be appropriately used based on the number of questions per video & batch size. This operation should not happen often.
+               total        used        free      shared  buff/cache   available
+Mem:           503Gi       185Gi        97Gi       5.7Gi       220Gi       309Gi
+Swap:          4.0Gi       4.0Gi          0B
+
+tensorizing /local3/minhtr/VIPER/datasets/LVBench/raw_videos/Cm73ma6Ibcs.mp4 
+using cpu btw
+preparations complete. original frames: 87972, original fps: 24.0, requested fps: 1, so final frame count is 3665 to be processed in batches of 2000
+
+Decoding frames in batches:   0%|          | 0/2 [00:00<?, ?it/s][A
+Decoding frames in batches:  50%|█████     | 1/2 [00:14<00:14, 14.87s/it][A
+Decoding frames in batches: 100%|██████████| 2/2 [00:27<00:00, 13.48s/it][ADecoding frames in batches: 100%|██████████| 2/2 [00:27<00:00, 13.69s/it]

@@ -51,14 +51,14 @@ def save_file(obj, filename):
 
 
 class NExTQADataset(Dataset):
-    def __init__(self, split, data_path="", tokenize=None, max_samples=None, version='openended', fps=30,
-                 max_num_frames=30, start_sample=0, **kwargs):
+    def __init__(self, data_path, list_path, tokenize=None, max_samples=None, version='openended', fps=30,
+                 max_num_frames=30, start_sample=0, shuffle=False, shuffle_seed=42, **kwargs):
 
         assert version in ['openended', 'multiplechoice']
         directory = 'nextqa' if version == 'multiplechoice' else 'nextoe'
 
-        self.split = split
         self.data_path = data_path
+        self.list_path = list_path
         self.tokenize = tokenize
         self.version = version
         self.fps = fps
@@ -66,8 +66,12 @@ class NExTQADataset(Dataset):
         self.max_num_frames = max_num_frames
 
         # sample_list_path = os.path.join(self.data_path, directory, f'{split}.csv')
-        sample_list_path = os.path.join("/local/minh/VIPER/datasets/NExTVideo/csvs/", f'{split}.csv')
-        self.sample_list = load_file(sample_list_path)
+        self.list_path = os.path.expandvars(self.list_path)
+        self.list_path = os.path.expanduser(self.list_path)
+        self.sample_list = pd.read_csv(self.list_path, dtype = str)
+
+        if shuffle:
+            self.sample_list = self.sample_list.sample(frac=1, random_state=shuffle_seed).reset_index(drop=True)
         
         if max_samples is not None:
             end = start_sample+max_samples
@@ -196,8 +200,6 @@ class NExTQADataset(Dataset):
                         else:
                             p = c[0]
                 if p not in a:
-                    import pdb; pdb.set_trace()
-
                     if p is None:
                         print('None case')  # Should not happen
                     else:

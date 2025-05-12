@@ -889,7 +889,7 @@ class GPT3Model(BaseModel):
 
         from openai import OpenAI
         client = OpenAI(
-        api_key=os.getenv("OPENAI_KEY_PERSONAL")
+        api_key=os.getenv("OPENAI_KEY")
         )
         
 
@@ -899,7 +899,7 @@ class GPT3Model(BaseModel):
                 {"role": "system", "content": "You are a helpful assistant answering questions thoughtfully and concisely."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=top_p,
+            temperature=0,
             top_p=top_p,
             frequency_penalty=frequency_penalty,
             presence_penalty=presence_penalty,
@@ -977,7 +977,7 @@ class CodeGenModel(BaseModel, ABC):
             with open(config.fixed_code_file) as f:
                 self.fixed_code = f.read()
 
-    def forward(self, prompt, input_type='image', prompt_file=None, base_prompt=None, extra_context=None):
+    def forward(self, prompt, input_type='image', prompt_file=None, base_prompt=None, extra_context=None, save_artifacts=None):
         if config.use_fixed_code:  # Use the same program for every sample, like in socratic models
             return [self.fixed_code] * len(prompt) if isinstance(prompt, list) else self.fixed_code
 
@@ -986,6 +986,8 @@ class CodeGenModel(BaseModel, ABC):
                 base_prompt = f.read().strip()
         elif base_prompt is None:
             base_prompt = self.base_prompt
+
+        print("Prompting code gen model...")
 
         if isinstance(prompt, list):
             extended_prompt = [base_prompt.replace("INSERT_QUERY_HERE", p).
@@ -1000,8 +1002,14 @@ class CodeGenModel(BaseModel, ABC):
             raise TypeError("prompt must be a string or a list of strings")
 
         result = self.forward_(extended_prompt)
+
         if not isinstance(prompt, list):
             result = result[0]
+
+        if save_artifacts:
+            save_artifacts({
+                "prompts": extended_prompt
+            })
 
         return result
     
@@ -1030,28 +1038,34 @@ class OpenAIAPIClass(CodeGenModel):
 
             from openai import OpenAI
             client = OpenAI(
-                api_key=os.getenv("OPENAI_KEY_PERSONAL")
+                api_key=os.getenv("OPENAI_KEY")
             )
 
             responses = [
                 client.chat.completions.create(
-                    model=config.code_gen.specific_model,
-                    messages=[
-                        {"role": "system", "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=config.code_gen.temperature,
-                    top_p=config.code_gen.top_p,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                    stop=["\n```"],
+                    # syntax poweruser 😎 **
+                    **{
+                        "model": config.code_gen.specific_model,
+                        "messages": [
+                            {"role": "system", "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "frequency_penalty": 0,
+                        "presence_penalty": 0,
+                        **({"temperature": config.code_gen.temperature} if config.code_gen.temperature is not None else {}),
+                        **({"top_p": config.code_gen.top_p} if config.code_gen.top_p is not None else {}),
+                        **({"stop": list(config.code_gen.stop)} if config.code_gen.stop is not None else {})
+                    }
                 )
                 for prompt in extended_prompt
             ]
 
-
             resp = [r.choices[0].message.content for r in responses]
+
             
+            print("raw code generation output")
+            print(resp)
+
             # cleanup - ensure function bodies are returned.
             """
             Expected response is something like
@@ -1092,17 +1106,28 @@ class OpenAIAPIClass(CodeGenModel):
         return resp
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
+import torch
+
+import torch
+from transformers import StoppingCriteria, StoppingCriteriaList
+
 class KeywordStopCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, keywords):
+    def __init__(self, tokenizer, stop_words, prompt_input_ids):
         super().__init__()
         self.tokenizer = tokenizer
-        self.keywords = keywords
-        self.buffer = ""
+        self.stop_words = stop_words
+        self.prompt_length = len(prompt_input_ids[0])  # Store prompt length
 
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs):
-        new_token = self.tokenizer.decode(input_ids[0, -1], skip_special_tokens=True)
-        self.buffer += new_token
-        return any(keyword in self.buffer for keyword in self.keywords)
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        # Decode only the newly generated tokens (after prompt)
+        new_tokens = input_ids[0, self.prompt_length:]
+        generated_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        
+        for stop_word in self.stop_words:
+            if stop_word in generated_text:
+                print(f"Stopping generation: Found stop word '{stop_word}' in newly generated text: '{generated_text}'")
+                return True
+        return False
 
 class CodeLlamaClass(CodeGenModel):
     name = 'codellama'
@@ -1121,9 +1146,9 @@ class CodeLlamaClass(CodeGenModel):
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.specific_model,
-            load_in_4bit=True,  # 4-bit quantization to fit ~10-11GB VRAM
-            device_map="auto",  # Use up to 2 GPUs if needed
-            torch_dtype=torch.float16,
+            load_in_8bit=True, 
+            device_map="auto", 
+            torch_dtype=torch.bfloat16,
         )
 
     
@@ -1132,26 +1157,25 @@ class CodeLlamaClass(CodeGenModel):
 
         results = []
         for prompt in tqdm(extended_prompt, desc="Generating completions"):
-            
-            import pdb; pdb.set_trace()
 
             print(config.code_gen.max_new_tokens, config.code_gen.temperature, config.code_gen.top_p)
 
             input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.cuda()
-            stop_words = ["\ndef ", "\nclass ", "n@"]  # Customize if needed
-            stopping_criteria = StoppingCriteriaList([KeywordStopCriteria(self.tokenizer, stop_words)])
+            stop_words = ["\n def ", "\n class ", "\n@"]  # More specific stop words
+            stopping_criteria = StoppingCriteriaList([KeywordStopCriteria(self.tokenizer, stop_words, input_ids)])
+            
             outputs = self.model.generate(
                 input_ids=input_ids,
                 max_new_tokens=config.code_gen.max_new_tokens,
-                # stopping_criteria=stopping_criteria,
+                stopping_criteria=stopping_criteria,
                 do_sample=True,
                 temperature=config.code_gen.temperature,
                 top_p=config.code_gen.top_p,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
             )
-
-            # Decode
-            # outputs[0, len(input_ids[0]):]
-            result = self.tokenizer.decode(outputs[len(input_ids):], skip_special_tokens=True)
+            
+            result = self.tokenizer.decode(outputs[0, len(input_ids[0]):], skip_special_tokens=True)
             import pdb; pdb.set_trace()
 
             results.append(result)
@@ -1168,19 +1192,19 @@ class DeepSeekClass(CodeGenModel):
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
         
-        # self.specific_model = config.code_gen.specific_model
-        # assert self.specific_model in ["deepseek-ai/DeepSeek-Coder-V2-Lite-Base"]
+        self.specific_model = config.code_gen.specific_model
+        assert self.specific_model in ["deepseek-ai/DeepSeek-Coder-V2-Lite-Base"]
 
-        # # Load tokenizer and model (CodeLlama-13B)
-        # self.tokenizer = AutoTokenizer.from_pretrained(self.specific_model,
-        #                                                trust_remote_code=True)
+        # Load tokenizer and model (CodeLlama-13B)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.specific_model,
+                                                       trust_remote_code=True)
 
-        # self.model = AutoModelForCausalLM.from_pretrained(
-        #     self.specific_model,
-        #     device_map="auto",
-        #     torch_dtype=torch.bfloat16,  # or bfloat16 if supported
-        #     trust_remote_code=True
-        # )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.specific_model,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,  # or bfloat16 if supported
+            trust_remote_code=True
+        )
 
     # Error in deepseek model: 'DynamicCache' object has no attribute 'get_max_length'
     def forward_(self, extended_prompt):
@@ -1331,7 +1355,7 @@ class BLIPModel(BaseModel):
                 self.model = Blip2ForConditionalGeneration.from_pretrained(
                     f"Salesforce/{blip_v2_model_type}", load_in_8bit=half_precision,
                     torch_dtype=torch.float16 if half_precision else "auto",
-                    device_map="sequential", max_memory=max_memory
+                    device_map="auto", max_memory=max_memory
                 )
             except Exception as e:
                 # Clarify error message. The problem is that it tries to load part of the model to disk.

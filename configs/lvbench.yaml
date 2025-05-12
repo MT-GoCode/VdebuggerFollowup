@@ -3,25 +3,31 @@ path_pretrained_models: './pretrained_models'       # Path to the pretrained mod
 execute_code: True                                 # Execute the code after generating it. Only applies to main_batch
 
 dataset:
-  data_path: $DATASETS/LVBench/standardized_videos
+  data_path: $DATASETS/LVBench/raw_videos
   list_path: $DATASETS/LVBench/csvs/full.csv
   dataset_name: LVBench
   version: multiplechoice
-  fps: 10
-  split: full
-  batch_size: 2
-  max_samples: 4
-  clear_tensor_cache: False
-  tensor_cache: "$DATASETS/LVBench/tensor_cache"
+  sample_fps: 1
+  batch_size: 2 # always run with at least batch size > 1, or else it will behave differently
+  # also watch it.
+  max_samples: 1500
+  
+#   shuffle: True
+#   shuffle_seed: 42
   # a single, tensorized video can be up to 25GB. i ought to have variable batch sizes... harmless if a large batch is on the same video, but go video-by-video.
   # also, as it stands, this code base re-loads the same video tensor even for different examples. so my batch size maxes out at 2.
 
 code_gen:
+    # model_class: openai
+    # specific_model: o3 # can't specify temp or top_p for this one
+    # prompt: ./prompts/benchmarks/lvbench.chatprompt
+
     model_class: openai
     specific_model: gpt-4o
     temperature: 1
-    prompt: ./prompts/benchmarks/nextqa.chatprompt
+    prompt: ./prompts/benchmarks/lvbench.chatprompt
     top_p: 0.9
+    stop: ["\n```"]
 
     # model_class: codellama
     # specific_model: codellama/CodeLlama-7b-hf

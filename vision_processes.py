@@ -69,7 +69,9 @@ def make_fn(model_class, process_name, counter):
             if model_class.to_batch and not config.multiprocessing:
                 out = out[0]
         except Exception as e:
+            import traceback
             print(f'Error in {process_name} model:', e)
+            traceback.print_exc()
             out = None
         return out
 

@@ -579,7 +579,8 @@ def execute_command(video, possible_answers, query)->[str, dict]:
     answer = video_segment.select_answer(info, query, possible_answers)
     return answer
 
-
+# You are allowed to use imports, but please place them within the function, and only import from built-in libraries. Do not use any non-built-in libraries.
+# This function must return the correct answer by the end. There must be a return statement!
 
 # INSERT_QUERY_HERE
 # possible answers: EXTRA_CONTEXT_HERE

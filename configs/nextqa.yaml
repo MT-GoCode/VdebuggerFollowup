@@ -4,11 +4,11 @@ execute_code: True                                 # Execute the code after gene
 
 dataset:
   data_path: $DATASETS/NExTVideo/NExTVideo/
+  list_path: $DATASETS/NExTVideo/csvs/val.csv
   dataset_name: NExTQA
   version: multiplechoice
-  fps: 1
+  fps: 3
   max_num_frames: 30
-  split: val
   batch_size: 4
   max_samples: 10
 
@@ -18,20 +18,21 @@ code_gen:
     # temperature: 1
     # prompt: ./prompts/benchmarks/nextqa.chatprompt
     # top_p: 0.9
+    # stop: ["\n```"]
 
-    # model_class: codellama
-    # specific_model: codellama/CodeLlama-7b-hf
-    # temperature: 1
-    # prompt: ./prompts/benchmarks/nextqa.completionprompt
-    # max_new_tokens: 20
-    # top_p: 0.9
-
-    model_class: deepseek
-    specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base
+    model_class: codellama
+    specific_model: codellama/CodeLlama-13b-hf
     temperature: 1
     prompt: ./prompts/benchmarks/nextqa.completionprompt
-    max_new_tokens: 256
+    max_new_tokens: 1024
     top_p: 0.9
+
+    # model_class: deepseek
+    # specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base
+    # temperature: 1
+    # prompt: ./prompts/benchmarks/nextqa.completionprompt
+    # max_new_tokens: 256
+    # top_p: 0.9
 
 load_models:                                        # which code-running stage models to load
     maskrcnn: False

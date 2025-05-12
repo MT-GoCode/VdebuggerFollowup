@@ -81,17 +81,29 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
     llm_query_partial = partial(llm_query, queues=queues)
 
     try:
-        print("ABOUT TO EXEC #", sample_id)
-        result = globals()[f'execute_command_{sample_id}'](
-            # Inputs to the function
-            image, possible_answers, query,
-            # Classes to be used
-            image_patch_partial, video_segment_partial,
-            # Functions to be used
-            llm_query_partial, bool_to_yesno, distance, best_image_match)
-        
-        print("EXECUTION OF #", sample_id, " finished. Result is: ")
-        print(result)
+        import concurrent.futures
+
+        print("ABOUT TO EXEC #", sample_id)  # ✅ print happens first
+
+        def run_execute():
+            return globals()[f'execute_command_{sample_id}'](
+                image, possible_answers, query,
+                image_patch_partial, video_segment_partial,
+                llm_query_partial, bool_to_yesno, distance, best_image_match
+            )
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_execute)
+                result = future.result(timeout=1500)  # ⏱ 25 min timeout
+
+            print("EXECUTION OF #", sample_id, " finished. Result is:")
+            print(result)
+
+        except concurrent.futures.TimeoutError:
+            print(f"Sample {sample_id} timed out after 25 minutes.")
+            result = "timeout exceeded"
+
     except Exception as e:
         # print full traceback
         traceback.print_exc()
@@ -142,7 +154,7 @@ def main():
         queues_results = [None for _ in range(batch_size)]
 
     model_name_codex = config.code_gen.model_class
-    codex = partial(forward, model_name=model_name_codex, queues=[queues_in, queue_results_main])
+    code_gen = partial(forward, model_name=model_name_codex, queues=[queues_in, queue_results_main])
 
     if config.clear_cache:
         cache.clear()
@@ -176,6 +188,10 @@ def main():
     all_possible_answers = []
     all_query_types = []
 
+    all_prompts = []
+    def save_artifacts_code_gen(x):
+        all_prompts.extend(x['prompts'])
+
     with mp.Pool(processes=num_processes, initializer=worker_init, initargs=(queues_results,)) \
             if config.multiprocessing else open(os.devnull, "w") as pool:
         try:
@@ -187,8 +203,8 @@ def main():
                 # TODO compute Codex for next batch as current batch is being processed
 
                 if not config.use_cached_codex:
-                    codes = codex(prompt=batch['query'], base_prompt=base_prompt, input_type=input_type,
-                                  extra_context=batch['extra_context'])
+                    codes = code_gen(prompt=batch['query'], base_prompt=base_prompt, input_type=input_type,
+                                  extra_context=batch['extra_context'], save_artifacts=save_artifacts_code_gen)
 
                 else:
                     codes = codes_all[i * batch_size:(i + 1) * batch_size]  # If cache
@@ -227,6 +243,8 @@ def main():
                 all_queries += batch['query']
                 all_img_paths += [dataset.get_sample_path(idx) for idx in batch['index']]
 
+                # all_prompts collected too
+
                 console.print(f"Batch {i} all_results:", all_results)
                 console.print(f"Batch {i} all_codes:", all_codes)
                 console.print(f"Batch {i} all_ids:", all_ids)
@@ -261,7 +279,6 @@ def main():
 
     if config.save:
         results_dir = pathlib.Path(config['results_dir'])
-        results_dir = results_dir / config.dataset.split
         results_dir.mkdir(parents=True, exist_ok=True)
 
         if not config.save_new_results:
@@ -282,8 +299,10 @@ def main():
         total_compilation_errors = 0
         total_execution_errors = 0
 
-        for rid, path, query, result, answer, poss_ans, code in zip(
-            all_ids, all_img_paths, all_queries, all_results, all_answers, all_possible_answers, all_codes
+        import textwrap
+
+        for rid, path, query, result, answer, poss_ans, code, prompt in zip(
+            all_ids, all_img_paths, all_queries, all_results, all_answers, all_possible_answers, all_codes, all_prompts
         ):
             result_str = str(result).lower()
             if "error during compilation" in result_str:
@@ -298,7 +317,10 @@ def main():
                 "result": result,
                 "answer": answer,
                 "possible_answers": poss_ans,
-                "code": code
+                "code": code,
+                "artifacts": {
+                    "full_prompt": prompt 
+                }
             })
 
         total_examples = len(results_data)

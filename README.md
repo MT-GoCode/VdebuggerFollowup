@@ -1,22 +1,27 @@
 # Minh's Command Log for reproducibility
 
 ```
-Root directory used is ~/VIPER.
-~/VIPER/viper is this repository, a fork from the original viper codebase.
-~/VIPER/datasets is for data
+# ORGANIZATION:
+# Root directory used is VIPER.
+# VIPER/VdebuggerFollowup is this repository, a fork from the original viper codebase.
+# VIPER/datasets is for data
+mkdir VIPER
+cd VIPER
+mkdir datasets
 
 # Three environments will be set up. Keep an eye out.
 
 # Initial repository setup
-git clone https://github.com/cvlab-columbia/viper.git
+git clone https://github.com/MT-GoCode/VdebuggerFollowup.git
+cd VdebuggerFollowup
 
 conda create -n viper-main python=3.10 -y
 conda activate viper-main
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # Install the torch wheels that are most compatible with the underlying architecture. We had 1080 Ti's, despite 12.8 driver installed, 11.8 wheels is the right one to install.
 
-pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words numpy omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd dotenv
+pip install numpy
+pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd dotenv
 
-cd viper
 chmod +x download_models.sh # needs gdown
 ./download_models.sh
 
@@ -25,29 +30,30 @@ pip install --upgrade transformers==4.47 tokenizers==0.21.0 # make sure these tw
 # Building GLIP
 conda deactivate 
 
-cd viper
 # Here, you should clone the modified GLIP repo you made in place of the GLIP subfolder. Modifications include compatibility with CUDA 12.8 and modern numpy. For reference the original is: https://github.com/sachit-menon/GLIP.git. This will not work.
 # after cloning your modified GLIP repo,  
-git clone https://github.com/MT-GoCode/GLIP_for_vdebug.git
-rm GLIP
-mv GLIP_for_vdebug GLIP
+git clone https://github.com/MT-GoCode/GLIP_for_vdebug.git GLIP
+cd GLIP
 
 conda create -n glip-compile python=3.10 -y
+conda activate glip-compile
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 # Install the wheels that are compatible with the installed CUDA driver version, regardless of what hardware is. we had 12.8 Driver with older 1080Ti's.
 
-cd GLIP
-git checkout cuda-128-compat # switch to the branch compatible with your driver. i made changes to GLIP so it would work in 12.8 and modern numpy. 
+git checkout cuda-128-compat # switch to the branch compatible with your driver. i made changes to GLIP so it would work in 12.8 and modern numpy. This is all to get setup.py to run. 
 # BTW, cuda-128-compat was tested and also works with: CUDA Driver 12.6
+
 python setup.py build develop --user
 
 conda deactivate 
 
 # Not critical, just to get some imports to run
+conda activate viper-main
 python -m spacy download en_core_web_lg
 
-conda activate viper-main
-
-python main_batch.py
+```
+```
+# To be run once you've set up a proper config & dataset.
+CUDA_VISIBLE_DEVICES=... CONFIG=lvbench PYTHONPATH=./GLIP python main_batch.py
 ```
 
 ## DATASETS
@@ -55,8 +61,9 @@ python main_batch.py
 ### NExTVideo:
 
 ```
-mkdir ./datasets/NExTVideo
-gdown "https://drive.google.com/file/d/1jTcRCrVHS66ckOUfWRb-rXdzJ52XAWQH/view"
+mkdir VIPER/datasets/NExTVideo
+cd VIPER/datasets/NExTVideo
+gdown "https://drive.google.com/uc?id=1jTcRCrVHS66ckOUfWRb-rXdzJ52XAWQH"
 unzip NExTVideo.zip
 mkdir ./NExTVideo/csvs
 
@@ -72,22 +79,25 @@ wget https://raw.githubusercontent.com/doc-doc/NExT-QA/main/dataset/nextqa/val.c
 ```
 ### LVBench:
 ```
-conda deactivate
 conda create -n lvbench-dl python=3.10 -y
 
-pip install video2dataset # let this install whatever torch it whats.
+pip install yt-dlp
 
-cd ./VIPER/datasets
+cd VIPER/datasets
 git clone https://github.com/THUDM/LVBench.git
 cd LVBench/data
 wget https://huggingface.co/datasets/THUDM/LVBench/resolve/main/video_info.meta.jsonl
 cd ../scripts
 
-# ensure ffmpeg is installed -- see appendix setup
+# ensure ffmpeg is installed before this next step -- see appendix setup
 ```
 Inside scripts folder, the authors of LVBench provided a download.sh script, but it is lacking in a few spots, namely its ability to use a cookies file to download from youtube and recoding videos.
 
-I recommend creating a new_download.sh in scripts/ and running this:
+I recommend creating a new_download.sh in scripts/ as follows, and running it. This is NOT the last step.
+
+Youtube downloading is a very inexact science. Here are some tips:
+- make sure to drop a cookies.txt file right next to the new_download.sh before running. Without this, you may be able to download a few videos but it'll fail eventually as youtube starts asking to prove you're not a bot. you can retrieve youtube's cookies with the "Get cookies.txt LOCALLY" chrome extension
+- You may get a variety of errors. the ones that are not bot-related or simply the yt video is no longer available may go away just by trying again. So you can run this downloading script twice or thrice. I was able to get almost all videos by running this script twice save for 5 copyright-striked video.
 ```
 #!/bin/bash
 
@@ -161,6 +171,8 @@ for f in ../raw_videos/*; do
     ".$STANDARD_VIDEO_DIR/${name}.mp4"
 done
 ```
+Lastly, copy-paste the lvbenchcsv_generator.py into the LVBench folder and run it to produce a dataset CSV that will be used in the primary pipeline.
+
 
 ## Setup Appendix 
 
@@ -168,9 +180,7 @@ done
 ```
 # FFMPEG
 
-cd ~
-mkdir -p bin
-cd bin
+# CD into your bin/program folder
 wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-i686-static.tar.xz
 tar -xf ffmpeg-release-i686-static.tar.xz
 

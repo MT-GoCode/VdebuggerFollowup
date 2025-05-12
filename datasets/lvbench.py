@@ -25,9 +25,7 @@ from collections import Counter
 import joblib
 from joblib import Memory
 
-CACHE_DIR = "./video_cache"  # Directory to store cached video tensors
-memory = Memory(CACHE_DIR, verbose=0)  # Initialize joblib Memory for caching
-
+CACHE_DIR = "./video_tensor_iteration_cache"  # Directory to store cached video tensors
 import torch
 
 # def get_best_gpu(min_memory_required_mb=2000):
@@ -66,6 +64,13 @@ import torch
 #         return -1
 #         # return torch.device('cpu')
 
+iteration_cache = [
+    # 'LLSJrEgOOtw',
+    # 'aJI8XTa_DII',
+    # 'JlrzSvCsIjE',
+    # '2sriHX3PbXw'
+]
+
 
 from tqdm import tqdm
 
@@ -74,6 +79,22 @@ from tqdm import tqdm
 from functools import lru_cache
 @lru_cache(maxsize=2)
 def tensorize_video(video_path, fps=30):
+    print("Tensorizing new video. let's check RAM usage -- should be appropriately used based on the number of questions per video & batch size. This operation should not happen often.")
+    import subprocess
+    output = subprocess.check_output(["free", "-h"], text=True)
+    print(output)
+
+    # iteration cache - loading
+    video_filename = os.path.splitext(os.path.basename(video_path))[0]
+    if video_filename in iteration_cache:
+        disk_cache_path = os.path.join(CACHE_DIR, f"{video_filename}_{fps}fps.pt")
+        if os.path.exists(disk_cache_path):
+            print(f"[iteration-cache] Loading from: {disk_cache_path}")
+            return torch.load(disk_cache_path)
+
+    # end
+
+
     print(f"tensorizing {video_path} ")
     # device = get_best_gpu(min_memory_required_mb=200)
     # print(f"using GPU {device}")
@@ -101,7 +122,15 @@ def tensorize_video(video_path, fps=30):
         video_chunks.append(video_batch)
         video[i:i+len(batch)] = video_batch
 
-    print(f"tensorization finished with {video.shape} and {video.dtype}. if caching turned on, that may take a while. ")
+    print(f"tensorization finished with {video.shape} and {video.dtype}.")
+
+    # iteration cache - saving
+    if video_filename in iteration_cache:
+        disk_cache_path = os.path.join(CACHE_DIR, f"{video_filename}_{fps}fps.pt")
+        print(f"[iteration-cache] Saving to: {disk_cache_path}")
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        torch.save(video, disk_cache_path)
+    # end
 
     return video
 
@@ -121,17 +150,15 @@ def save_file(obj, filename):
 
 
 class LVBenchDataset(Dataset):
-    def __init__(self, split, data_path, list_path, tokenize=None, max_samples=None, version='openended', fps=30,
-                 start_sample=0, clear_tensor_cache = False, tensor_cache = None, **kwargs):
+    def __init__(self, data_path, list_path, tokenize=None, max_samples=None, version='openended', sample_fps=30,
+                 start_sample=0, shuffle=False, shuffle_seed=42, **kwargs):
 
         assert version in ['openended', 'multiplechoice']
-
-        self.split = split
         self.data_path = data_path
         self.list_path = list_path
         self.tokenize = tokenize
         self.version = version
-        self.fps = fps
+        self.sample_fps = sample_fps
         self.input_type = 'video'
 
         # THE TENSOR CACHE WILL NOT BE USED
@@ -151,6 +178,9 @@ class LVBenchDataset(Dataset):
         self.list_path = os.path.expandvars(self.list_path)
         self.list_path = os.path.expanduser(self.list_path)
         self.sample_list = pd.read_csv(self.list_path, dtype = str)
+
+        if shuffle:
+            self.sample_list = self.sample_list.sample(frac=1, random_state=shuffle_seed).reset_index(drop=True)
         
         if max_samples is not None:
             end = start_sample+max_samples
@@ -173,10 +203,6 @@ class LVBenchDataset(Dataset):
         return video_path
 
     def __getitem__(self, idx):
-        print("getting new item. let's check RAM usage -- should be appropriately used based on the number of questions per video & batch size.")
-        import subprocess
-        output = subprocess.check_output(["free", "-h"], text=True)
-        print(output)
 
         sample_id = self.sample_ids[idx]
         cur_sample = self.sample_list.loc[sample_id]
@@ -191,19 +217,19 @@ class LVBenchDataset(Dataset):
         video_path = os.path.join(self.data_path, video_name + '.mp4')
 
         # if self.tensor_cache:
-        #     cache_identifier = f"{video_name}_{self.fps}.pt"
+        #     cache_identifier = f"{video_name}_{self.sample_fps}.pt"
 
         #     cache_path = os.path.join(self.tensor_cache, cache_identifier)
         #     if not os.path.exists(cache_path):
-        #         video = tensorize_video(video_path, fps = self.fps)
+        #         video = tensorize_video(video_path, fps = self.sample_fps)
         #         torch.save(video, cache_path)
         #         print(f"video {video_name} completely finished processing")
         #     else: 
         #         video = torch.load(cache_path)
         #         print(f"video {video_name} tensor fetched from disk")
 
-        video = tensorize_video(video_path, fps = self.fps)
-        print(f"video {video_name} completely finished processing")
+        video = tensorize_video(video_path, fps = self.sample_fps)
+        print(f"video {video_name} completely finished tensorization. if no progress bar shown, this was retreived from LRU RAM cache.")
         
         if self.version == 'openended':
             answer = str(cur_sample['answer'])
@@ -216,9 +242,25 @@ class LVBenchDataset(Dataset):
 
         query_type = str(cur_sample['type'])
 
+        # Get video stats
+        num_frames = len(video)  # Assuming `video` is a tensor or list of frames
+        duration_sec = round(num_frames / self.sample_fps, 2)
+
+        # Format possible answers
+        answers_str = (
+            ", ".join(possible_answers) if isinstance(possible_answers, list) else possible_answers
+        )
+
+        # Create extra context string
+        extra_context = (
+            f"The possible answers are: {answers_str}. "
+            f"The video has {num_frames} frames at {self.sample_fps} frames a second, "
+            f"meaning it is {duration_sec} seconds long."
+        )
+
         out_dict = {"sample_id": sample_id, "answer": answer, "image": video, "query": question, 'pil_img': -1,
                     "query_type": query_type, 'index': idx, 'possible_answers': possible_answers,
-                    'extra_context': possible_answers}
+                    'extra_context': extra_context}
 
         return out_dict
 

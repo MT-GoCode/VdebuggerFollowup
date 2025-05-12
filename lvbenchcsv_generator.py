@@ -122,7 +122,7 @@ def generate_csv(video_folder, jsonl_path, output_csv_path):
 
 # Run the function with new paths
 generate_csv(
-    video_folder="/local/minh/VIPER/datasets/LVBench/raw_videos",
-    jsonl_path="/local/minh/VIPER/datasets/LVBench/data/video_info.meta.jsonl",
-    output_csv_path="/local/minh/VIPER/datasets/LVBench/csvs/full.csv"
+    video_folder="./raw_videos",
+    jsonl_path="./data/video_info.meta.jsonl",
+    output_csv_path="./csvs/full.csv"
 )

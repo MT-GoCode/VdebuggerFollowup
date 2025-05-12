@@ -105,10 +105,10 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
             result = "timeout exceeded"
 
     except Exception as e:
-        # print full traceback
-        traceback.print_exc()
-        print("Sample {sample_id} failed DURING EXECUTION with error: {e}. Setting result to 'error during execution'")
-        result = "error during execution"
+        tb = traceback.format_exc()
+        print(tb)
+        print(f"Sample {sample_id} failed DURING EXECUTION with error: {e}. Setting result to 'error during execution'")
+        result = f"ERROR DURING EXECUTION: TRACEBACK[{tb}]"
 
         # this is a very loopy, weird way the authors had to handle errors by forcing an error (indented block error) with broken code "[". I still don't get it. 
         # if retrying:
@@ -245,20 +245,42 @@ def main():
 
                 # all_prompts collected too
 
-                console.print(f"Batch {i} all_results:", all_results)
-                console.print(f"Batch {i} all_codes:", all_codes)
-                console.print(f"Batch {i} all_ids:", all_ids)
-                console.print(f"Batch {i} all_answers:", all_answers)
-                console.print(f"Batch {i} all_possible_answers:", all_possible_answers)
-                console.print(f"Batch {i} all_queries:", all_queries)
-                console.print(f"Batch {i} all_query_types:", all_query_types)
-                console.print(f"Batch {i} all_img_paths:", all_img_paths)
-                console.print("all code execution finished. going to accuracy.")
+                # console.print(f"Batch {i} all_results:", all_results)
+                # console.print(f"Batch {i} all_codes:", all_codes)
+                # console.print(f"Batch {i} all_ids:", all_ids)
+                # console.print(f"Batch {i} all_answers:", all_answers)
+                # console.print(f"Batch {i} all_possible_answers:", all_possible_answers)
+                # console.print(f"Batch {i} all_queries:", all_queries)
+                # console.print(f"Batch {i} all_query_types:", all_query_types)
+                # console.print(f"Batch {i} all_img_paths:", all_img_paths)
+                # console.print("all code execution finished. going to accuracy.")
+                if config.logfile:
+                    with open(config.logfile, "a") as f:
+                        print(f"BATCH {i} -------------------------------------------------------------")
+                        print(f"Batch {i} results:", [r[0] for r in results], file=f)
+                        print(f"Batch {i} codes:", file=f)
+                        for j, code in enumerate([r[1] for r in results]):
+                            print(f"--- Batch {i}, Code {j} ---", file=f)
+                            print(code, file=f)
+                        print(f"Batch {i} ids:", batch['sample_id'], file=f)
+                        print(f"Batch {i} answers:", batch['answer'], file=f)
+                        print(f"Batch {i} possible_answers:", batch['possible_answers'], file=f)
+                        print(f"Batch {i} queries:", batch['query'], file=f)
+                        print(f"Batch {i} query_types:", batch['query_type'], file=f)
+                        print(f"Batch {i} img_paths:", [dataset.get_sample_path(idx) for idx in batch['index']], file=f)
+                        print("Batch code execution finished.", file=f)
+
 
                 if i % config.log_every == 0:
                     try:
-                        accuracy = dataset.accuracy(all_results, all_answers, all_possible_answers, all_query_types)
-                        console.print(f'Accuracy at Batch {i}/{n_batches}: {accuracy}')
+                        batch_accuracy = dataset.accuracy(
+                            [r[0] for r in results],
+                            batch['answer'],
+                            batch['possible_answers'],
+                            batch['query_type']
+                        )
+                        with open(config.logfile, "a") as f:
+                            print(f'Accuracy at Batch {i}/{n_batches}: {batch_accuracy}')
                     except Exception as e:
                         console.print(f'Error computing accuracy: {e}') 
 

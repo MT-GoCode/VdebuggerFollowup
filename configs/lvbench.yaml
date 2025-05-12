@@ -1,6 +1,7 @@
 multiprocessing: False                              # Run the models and samples in parallel
 path_pretrained_models: './pretrained_models'       # Path to the pretrained models
 execute_code: True                                 # Execute the code after generating it. Only applies to main_batch
+logfile: 'lvbench_log_2.txt'
 
 dataset:
   data_path: $DATASETS/LVBench/raw_videos

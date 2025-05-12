@@ -9,17 +9,21 @@ dataset:
   fps: 1
   max_num_frames: 30
   split: val
-  batch_size: 32
-#  max_samples: 100
+  batch_size: 1000000000
+  max_samples: 100
 
 #codex:
 #  prompt: ./prompts/benchmarks/nextqa.prompt
 code_gen:
-  model_class: openai
-  specific_model: gpt-4o-mini-2024-07-18
+  model_class: vllm
+  specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base # codellama/CodeLlama-7b-Python-hf
   temperature: 1
-  prompt: ./prompts/benchmarks/nextqa.chatprompt
-  top_p: 0.9
+  prompt: ./prompts/benchmarks/nextqa.completionprompt
+#  prompt: ./prompts/benchmarks/nextqa.chatprompt
+#  top_p: 0.9
+  max_new_tokens: 512
+  do_sample: False
+  use_tqdm: False
 
 select_answer_prompt: ./prompts/gpt3/video_question.txt
 fixed_code_file: ./prompts/fixed_code/blip2_video.prompt

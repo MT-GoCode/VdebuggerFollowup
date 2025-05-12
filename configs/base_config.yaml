@@ -10,7 +10,7 @@ dataset:
   max_num_frames: 15
   split: val
   batch_size: 4
-  max_samples: 10
+#  max_samples: 10
 
     #code_gen:
     #    model_class: openai

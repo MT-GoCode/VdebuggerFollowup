@@ -50,7 +50,7 @@ def save_file(obj, filename):
 
 class NExTQADataset(Dataset):
     def __init__(self, split, data_path="", tokenize=None, max_samples=None, version='openended', fps=30,
-                 max_num_frames=30, start_sample=0, **kwargs):
+                 max_num_frames=30, start_sample=0, execute_code=True, **kwargs):
 
         assert version in ['openended', 'multiplechoice']
 
@@ -82,6 +82,8 @@ class NExTQADataset(Dataset):
             for video in os.listdir(os.path.join(self.data_path, 'NExTVideo', directory)):
                 self.video_to_dir[video.split('.')[0]] = directory
 
+        self.execute_code = execute_code
+
     def get_sample_path(self, index):
         sample_id = self.sample_ids[index]
         cur_sample = self.sample_list.loc[sample_id]
@@ -112,7 +114,10 @@ class NExTQADataset(Dataset):
 
         video_name = str(cur_sample['video'])
         video_path = os.path.join(self.data_path, 'NExTVideo', self.video_to_dir[video_name], video_name + '.mp4')
-        video = self.get_video(video_path)
+        if self.execute_code:
+            video = self.get_video(video_path)
+        else:
+            video = 0
 
         if self.version == 'openended':
             answer = str(cur_sample['answer'])
@@ -139,8 +144,6 @@ class NExTQADataset(Dataset):
         return self.sample_id_to_index[sample_id]
 
     def accuracy(self, prediction, ground_truth, possible_answers, query_type):
-        import pdb
-        pdb.set_trace()  # why this slow?
         """
         Args:
             prediction (list): List of predicted answers.

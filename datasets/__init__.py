@@ -8,7 +8,7 @@ from torchvision import transforms
 
 
 # ----------------------------- General for all datasets ----------------------------- #
-def get_dataset(config_dataset):
+def get_dataset(config_dataset, **kwargs):
     dataset_name = config_dataset.dataset_name
 
     if dataset_name == 'RefCOCO':
@@ -26,7 +26,7 @@ def get_dataset(config_dataset):
                                image_transforms=transforms.Compose([transforms.ToTensor()]))
     elif dataset_name == 'NExTQA':
         from datasets.nextqa import NExTQADataset
-        dataset = NExTQADataset(**config_dataset)
+        dataset = NExTQADataset(**config_dataset, **kwargs)
     elif dataset_name == 'LVBench':
         from datasets.lvbench import LVBenchDataset
         dataset = LVBenchDataset(**config_dataset)

@@ -10,7 +10,7 @@ dataset:
   max_num_frames: 30
   split: val
   batch_size: 1
-  max_samples: 10
+  max_samples: 100
 
 #codex:
 #  prompt: ./prompts/benchmarks/nextqa.prompt
@@ -30,4 +30,4 @@ gpt3:
   model: gpt-4o-mini-2024-07-18
 
 use_cached_codex: True
-cached_codex_path: results/nextqa/val/results_0.csv
+cached_codex_path: results/nextqa/val/results_18.csv

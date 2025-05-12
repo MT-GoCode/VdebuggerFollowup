@@ -6,6 +6,7 @@ process(name, *args, **kwargs), where *args and **kwargs are the arguments of th
 
 import abc
 import contextlib
+import multiprocessing
 import os
 import re
 import timeit
@@ -19,6 +20,7 @@ import torch
 import torchvision
 from PIL import Image
 from joblib import Memory
+from openai import OpenAI
 from rich.console import Console
 from torch import hub
 from torch.nn import functional as F
@@ -1010,10 +1012,27 @@ class CodeGenModel(BaseModel, ABC):
         pass
 
 
+def openai_func(prompt):
+    response = OpenAI().chat.completions.create(
+        model=config.code_gen.specific_model,
+        messages=[
+            {"role": "system",
+             "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=config.code_gen.temperature,
+        top_p=config.code_gen.top_p,
+        frequency_penalty=0,
+        presence_penalty=0,
+        stop=["\n```"],
+    )
+    return response.choices[0].message.content
+
+
 class OpenAIAPIClass(CodeGenModel):
     name = 'openai'
     requires_gpu = False
-    max_batch_size = 5
+    max_batch_size = 32
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number=gpu_number)
@@ -1028,31 +1047,10 @@ class OpenAIAPIClass(CodeGenModel):
             return response
 
         try:
-            from openai import OpenAI
+            with multiprocessing.Pool(32) as p:
+                resp = p.map(openai_func, extended_prompt)
 
-            client = OpenAI(
-                # api_key=os.getenv("OPENAI_KEY_PERSONAL")
-                # Xueqing's comment: please set OPENAI_KEY
-            )
-
-            responses = [
-                client.chat.completions.create(
-                    model=config.code_gen.specific_model,
-                    messages=[
-                        {"role": "system",
-                         "content": "You are a coding assistant will align your responses exactly to textual requirements such as function headers and return statements."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=config.code_gen.temperature,
-                    top_p=config.code_gen.top_p,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                    stop=["\n```"],
-                )
-                for prompt in extended_prompt
-            ]
-
-            resp = [r.choices[0].message.content for r in responses]
+                # resp = [r.choices[0].message.content for r in responses]
 
             # cleanup - ensure function bodies are returned.
             """
@@ -1094,6 +1092,91 @@ class OpenAIAPIClass(CodeGenModel):
         #     response = self.forward_(extended_prompt)
 
         return resp
+
+
+class VLLMClass(CodeGenModel):
+    name = 'vllm'
+    requires_gpu = True
+    max_batch_size = 1000000000
+    load_order = 12
+
+    def __init__(self, gpu_number=0):
+        super().__init__(gpu_number=gpu_number)
+        self.max_new_tokens = config.code_gen.max_new_tokens
+
+        from vllm import LLM
+
+        # Load Llama2
+        model_id = config.code_gen.specific_model
+
+        if not os.path.exists(model_id) and os.path.isdir(model_id):
+            assert model_id in [
+                'codellama/CodeLlama-7b-hf', 'codellama/CodeLlama-13b-hf', 'codellama/CodeLlama-34b-hf',
+                'codellama/CodeLlama-7b-Python-hf', 'codellama/CodeLlama-13b-Python-hf',
+                'codellama/CodeLlama-34b-Python-hf', 'codellama/CodeLlama-7b-Instruct-hf',
+                'codellama/CodeLlama-13b-Instruct-hf', 'codellama/CodeLlama-34b-Instruct-hf',
+                'codellama/CodeLlama-70b-Python-hf', 'deepseek-ai/deepseek-coder-33b-base',
+                'deepseek-ai/DeepSeek-Coder-V2-Lite-Base',
+            ]
+        # Note: 70b-Instruct-hf has special formatting, will handle in the future
+        self.is_instruct = 'Instruct' in model_id
+        self.llm = LLM(model=model_id, dtype='bfloat16', tensor_parallel_size=torch.cuda.device_count(),
+                       max_model_len=10000, trust_remote_code=True)
+        self.sampling_params = self.get_sampling_params()
+
+    def get_sampling_params(self):
+        from vllm import SamplingParams
+
+        num_return_sequences = 1
+        return SamplingParams(
+            n=num_return_sequences,
+            temperature=config.code_gen.temperature if config.code_gen.do_sample else 0.0,
+            top_p=getattr(config.code_gen, 'top_p', 1.0),
+            max_tokens=config.code_gen.max_new_tokens,
+            stop=["\n\n"],
+        )
+
+    def run_codellama(self, prompt):
+        if self.is_instruct:
+            B_INST, E_INST = "[INST]", "[/INST]"
+            B_SYS, E_SYS = "<<SYS>>\n", "\n<</SYS>>\n\n"
+
+            prompt = [B_SYS + self.SYSTEM + E_SYS + p for p in prompt]
+            prompt = [f"{B_INST} {p.strip()} {E_INST}" for p in prompt]
+
+        outputs = self.llm.generate(prompt, self.sampling_params, use_tqdm=getattr(config.code_gen, 'use_tqdm', False))
+        generated_text = [[o.text for o in output.outputs] for output in outputs]
+
+        if self.is_instruct:  # ridiculous.
+            generated_text_ = []
+            for texts in generated_text:
+                generated_text_.append([])
+                for text in texts:
+                    if self.FUNCTION_HEAD in text:
+                        text = self.FUNCTION_HEAD + text.split(self.FUNCTION_HEAD)[1]
+                    else:
+                        text = self.FUNCTION_HEAD
+                    if "```" in text:
+                        text = text.split("```")[0]
+                    generated_text_[-1].append(text)
+            generated_text = generated_text_
+        generated_text = [[text.split('\n\n')[0] for text in texts] for texts in generated_text]
+
+        assert all(len(texts) == 1 for texts in generated_text)
+        generated_text = [texts[0] for texts in generated_text]
+        return generated_text
+
+    def forward_(self, extended_prompt):
+        if len(extended_prompt) > self.max_batch_size:
+            response = []
+            for i in range(0, len(extended_prompt), self.max_batch_size):
+                response += self.forward_(extended_prompt[i:i + self.max_batch_size])
+            return response
+        with torch.no_grad():
+            response = self.run_codellama(extended_prompt)
+        # Clear GPU memory
+        # torch.cuda.empty_cache()
+        return response
 
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList

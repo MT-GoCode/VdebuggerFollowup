@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import importlib
 import json
 import os
@@ -29,7 +30,10 @@ runs_dict = {}
 seed_everything()
 console = Console(highlight=False)
 
-STAMP = '42'
+if config.use_cached_codex:
+    STAMP = hashlib.sha256(config.cached_codex_path.encode()).hexdigest()
+else:
+    STAMP = '42'
 
 
 def my_collate(batch):
@@ -104,8 +108,10 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
     except Exception as e:
         # print full traceback
         traceback.print_exc()
-        print("Sample {sample_id} failed DURING EXECUTION with error: {e}. Setting result to 'error during execution'")
+        print(f"Sample {sample_id} failed DURING EXECUTION with error: {e}. Setting result to 'error during execution'")
         result = "error during execution"
+    finally:
+        os.remove(f'{name}.py')
 
         # this is a very loopy, weird way the authors had to handle errors by forcing an error (indented block error) with broken code "[". I still don't get it. 
         # if retrying:
@@ -162,13 +168,14 @@ def main():
         # log the prompt file
         wandb.save(config.code_gen.prompt)
 
-    dataset = get_dataset(config.dataset)
+    dataset = get_dataset(config.dataset, execute_code=config.execute_code)
 
     with open(config.code_gen.prompt) as f:
         base_prompt = f.read().strip()
 
     codes_all = None
     if config.use_cached_codex:
+        print("~~~~~~ Use code at", config.cached_codex_path)
         results = pd.read_csv(config.cached_codex_path)
         codes_all = results['code'].tolist()
         # codes_all = [r.split('# Answer is:')[1] for r in results['code']]

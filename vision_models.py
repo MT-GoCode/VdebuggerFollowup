@@ -876,8 +876,6 @@ class GPT3Model(BaseModel):
     #     return response
 
     def get_general(self, prompts) -> list[str]:
-        import pdb
-        pdb.set_trace()
         results = []
         for p in prompts:
             r = self.query_gpt3(p, model=self.model, max_tokens=1024, top_p=1, frequency_penalty=0, presence_penalty=0)

@@ -29,8 +29,8 @@ from torchvision import transforms
 from configs import config
 from utils import HiddenPrints
 
-# with open('api.key') as f:
-#     openai.api_key = f.read().strip()
+with open('api.key') as f:
+    openai.api_key = f.read().strip()
 
 cache = Memory('cache/' if config.use_cache else None, verbose=0)
 device = "cuda" if torch.cuda.is_available() else "cpu"

@@ -1,6 +1,9 @@
+import ast
+import importlib
 import json
 import os
 import pathlib
+import time
 import traceback
 import warnings
 from functools import partial
@@ -26,6 +29,8 @@ runs_dict = {}
 seed_everything()
 console = Console(highlight=False)
 
+STAMP = '42'
+
 
 def my_collate(batch):
     # Avoid stacking images (different size). Return everything as a list
@@ -41,7 +46,8 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
 
     code, sample_id, image, possible_answers, query = parameters
 
-    code_header = f'def execute_command_{sample_id}(' \
+    # code_header = f'def execute_command_{sample_id}(' \
+    code_header = f'def execute_command(' \
                   f'{input_type_}, possible_answers, query, ' \
                   f'ImagePatch, VideoSegment, ' \
                   'llm_query, bool_to_yesno, distance, best_image_match):\n' \
@@ -53,20 +59,21 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
 
     try:
         print("ABOUT TO COMPILE #", sample_id)
-        exec(compile(code, 'Codex', 'exec'), globals())
+        code = ast.unparse(ast.parse(code))  # do compile, so we can debug
+        # exec(compile(code, 'Codex', 'exec'), globals())
     except Exception as e:
         print(f'Sample {sample_id} failed at compilation time with error: {e}')
         result = "error during compilation"
         return None, code
-        # in the case of compilation error, the authors used a default code that would just return the result of a simple query on the image. I feel this messes up results. if code gen was wrong, code gen was wrong. so be it.
-        # try:
-        #     with open(config.fixed_code_file, 'r') as f:
-        #         fixed_code = f.read()
-        #     code = code_header + fixed_code 
-        #     exec(compile(code, 'Codex', 'exec'), globals())
-        # except Exception as e2:
-        #     print(f'Not even the fixed code worked. Sample {sample_id} failed at compilation time with error: {e2}')
-        #     return None, code
+    # in the case of compilation error, the authors used a default code that would just return the result of a simple query on the image. I feel this messes up results. if code gen was wrong, code gen was wrong. so be it.
+    # try:
+    #     with open(config.fixed_code_file, 'r') as f:
+    #         fixed_code = f.read()
+    #     code = code_header + fixed_code
+    #     exec(compile(code, 'Codex', 'exec'), globals())
+    # except Exception as e2:
+    #     print(f'Not even the fixed code worked. Sample {sample_id} failed at compilation time with error: {e2}')
+    #     return None, code
 
     queues = [queues_in_, queue_results]
 
@@ -74,18 +81,26 @@ def run_program(parameters, queues_in_, input_type_, retrying=False):
     video_segment_partial = partial(VideoSegment, queues=queues)
     llm_query_partial = partial(llm_query, queues=queues)
 
+    name = f'x_{STAMP}_{sample_id}'
+    with open(f'{name}.py', 'w') as f:
+        f.write(code)
+
+    for _ in range(20):
+        try:
+            x = importlib.import_module(name)
+        except ModuleNotFoundError:
+            print("Errrr, import error. Wait a bit while.")
+            time.sleep(60)  # I have no idea why it sometimes fails. Probably file system error
+        except Exception as e:
+            print("Import has error:", e)
+            break
+        else:
+            break
+
     try:
         print("ABOUT TO EXEC #", sample_id)
-        result = globals()[f'execute_command_{sample_id}'](
-            # Inputs to the function
-            image, possible_answers, query,
-            # Classes to be used
-            image_patch_partial, video_segment_partial,
-            # Functions to be used
-            llm_query_partial, bool_to_yesno, distance, best_image_match)
-
-        print("EXECUTION OF #", sample_id, " finished. Result is: ")
-        print(result)
+        result = x.execute_command(image, possible_answers, query, image_patch_partial, video_segment_partial,
+                                   llm_query_partial, bool_to_yesno, distance, best_image_match)
     except Exception as e:
         # print full traceback
         traceback.print_exc()
@@ -171,8 +186,6 @@ def main():
     all_possible_answers = []
     all_query_types = []
 
-    import pdb
-    pdb.set_trace()
     with mp.Pool(processes=num_processes, initializer=worker_init, initargs=(queues_results,)) \
             if config.multiprocessing else open(os.devnull, "w") as pool:
         try:

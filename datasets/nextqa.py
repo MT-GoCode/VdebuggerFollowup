@@ -5,7 +5,6 @@ import decord
 import nltk
 import numpy as np
 import pandas as pd
-import spacy
 from decord import cpu
 from nltk.corpus import wordnet
 from nltk.tokenize import word_tokenize
@@ -16,7 +15,6 @@ nltk.download('wordnet')
 nltk.download('punkt_tab')
 
 from pywsd.utils import lemmatize_sentence
-from collections import Counter
 
 
 def load_file(file_name):
@@ -47,6 +45,8 @@ def save_file(obj, filename):
         with open(filename, 'w') as fp:
             json.dump(obj, fp, indent=4)
 
+
+# nlp = spacy.load('en_core_web_lg')
 
 class NExTQADataset(Dataset):
     def __init__(self, split, data_path="", tokenize=None, max_samples=None, version='openended', fps=30,
@@ -167,36 +167,39 @@ class NExTQADataset(Dataset):
                     s = get_wups(remove_stop(p), remove_stop(g), 0)
                 score += 100 * s
         else:
-            nlp = spacy.load('en_core_web_lg')
             for p, g, a in zip(prediction, ground_truth, possible_answers):
                 if isinstance(p, list) or isinstance(p, tuple):
                     if len(p) == 2:
                         p = p[0]  # p[1] is the info dict
                     else:  # Multiple predictions
-                        all_answers = []
-                        for pp in p:
-                            if pp not in a:
-                                pred_tokens = nlp(pp)
-                                a.sort(key=lambda x: pred_tokens.similarity(nlp(x)), reverse=True)
-                                pp = a[0]
-                            all_answers.append(pp)
-                        # Majority vote
-                        c = Counter(all_answers).most_common(1)[0]
-                        if c[1] == 1:
-                            # If no majority, select the middle one
-                            p = all_answers[1]
-                        else:
-                            p = c[0]
+                        p = p[0]  # lazy selection
+                        # all_answers = []
+                        # for pp in p:
+                        #     if pp not in a:
+                        #         pred_tokens = nlp(pp)
+                        #         a.sort(key=lambda x: pred_tokens.similarity(nlp(x)), reverse=True)
+                        #         pp = a[0]
+                        #     all_answers.append(pp)
+                        # # Majority vote
+                        # c = Counter(all_answers).most_common(1)[0]
+                        # if c[1] == 1:
+                        #     # If no majority, select the middle one
+                        #     p = all_answers[1]
+                        # else:
+                        #     p = c[0]
+
                 if p not in a:
                     # import pdb
                     # pdb.set_trace()
 
-                    if p is None:
-                        print('None case')  # Should not happen
-                    else:
-                        pred_tokens = nlp(p)
-                        a.sort(key=lambda x: pred_tokens.similarity(nlp(x)), reverse=True)
-                    p = a[0]
+                    # if p is None:
+                    #     print('None case')  # Should not happen
+                    # else:
+                    #     pred_tokens = nlp(p)
+                    #     a.sort(key=lambda x: pred_tokens.similarity(nlp(x)), reverse=True)
+                    # p = a[0]
+                    p = ''
+
                 if p == g:
                     score += 1
         return score / len(prediction)

@@ -30,4 +30,4 @@ gpt3:
   model: gpt-4o-mini-2024-07-18
 
 use_cached_codex: True
-cached_codex_path: results/nextqa/val/results_18.csv
+cached_codex_path: results/nextqa/val/results_14.csv

@@ -3,76 +3,76 @@ path_pretrained_models: './pretrained_models'       # Path to the pretrained mod
 execute_code: True                                 # Execute the code after generating it. Only applies to main_batch
 
 dataset:
-  data_path: $DATASETS/LVBench/standardized_videos
-  list_path: $DATASETS/LVBench/csvs/full.csv
+  data_path: /local1/xueqing.wu/data/LVBench/all_videos # standardized_videos
+  list_path: /local1/xueqing.wu/data/LVBench/LVBench/video_info.meta.jsonl # csvs/full.csv
   dataset_name: LVBench
   version: multiplechoice
   fps: 10
   split: full
   batch_size: 2
-  max_samples: 4
+  max_samples: 6
   clear_tensor_cache: False
   tensor_cache: "$DATASETS/LVBench/tensor_cache"
   # a single, tensorized video can be up to 25GB. i ought to have variable batch sizes... harmless if a large batch is on the same video, but go video-by-video.
   # also, as it stands, this code base re-loads the same video tensor even for different examples. so my batch size maxes out at 2.
 
 code_gen:
-    model_class: openai
-    specific_model: gpt-4o
-    temperature: 1
-    prompt: ./prompts/benchmarks/nextqa.chatprompt
-    top_p: 0.9
+  model_class: openai
+  specific_model: gpt-4o-mini-2024-07-18  # gpt-4o
+  temperature: 1
+  prompt: ./prompts/benchmarks/nextqa.chatprompt
+  top_p: 0.9
 
-    # model_class: codellama
-    # specific_model: codellama/CodeLlama-7b-hf
-    # temperature: 1
-    # prompt: ./prompts/benchmarks/nextqa.completionprompt
-    # max_new_tokens: 256
-    # top_p: 0.9
+  # model_class: codellama
+  # specific_model: codellama/CodeLlama-7b-hf
+  # temperature: 1
+  # prompt: ./prompts/benchmarks/nextqa.completionprompt
+  # max_new_tokens: 256
+  # top_p: 0.9
 
-    # model_class: deepseek
-    # specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base
-    # temperature: 1
-    # prompt: ./prompts/benchmarks/nextqa.completionprompt
-    # max_new_tokens: 256
-    # top_p: 0.9
+  # model_class: deepseek
+  # specific_model: deepseek-ai/DeepSeek-Coder-V2-Lite-Base
+  # temperature: 1
+  # prompt: ./prompts/benchmarks/nextqa.completionprompt
+  # max_new_tokens: 256
+  # top_p: 0.9
 
-load_models:                                        # which code-running stage models to load
-    maskrcnn: False
-    clip: False
-    glip: True
-    owlvit: False
-    tcl: False
-    gpt3_qa: True
-    gpt3_general: True
-    depth: True
-    blip: True
-    saliency: False
-    xvlm: True
+load_models: # which code-running stage models to load
+  maskrcnn: False
+  clip: False
+  glip: True
+  owlvit: False
+  tcl: False
+  gpt3_qa: True
+  gpt3_general: True
+  depth: True
+  blip: True
+  saliency: False
+  xvlm: True
 
 # Configurations for code-running-stage models
 
-detect_thresholds:                                  # Thresholds for the models that perform detection
-    glip: 0.5
-    maskrcnn: 0.8
-    owlvit: 0.1
+detect_thresholds: # Thresholds for the models that perform detection
+  glip: 0.5
+  maskrcnn: 0.8
+  owlvit: 0.1
 ratio_box_area_to_image_area: 0.0                   # Any detected patch under this size will not be returned
 crop_larger_margin: True                            # Increase size of crop by 10% to include more context
 
-verify_property:                                    # Parameters for verify_property
-    model: xvlm                                     # Model to use for verify_property
-    thresh_clip: 0.6
-    thresh_tcl: 0.25
-    thresh_xvlm: 0.6
+verify_property: # Parameters for verify_property
+  model: xvlm                                     # Model to use for verify_property
+  thresh_clip: 0.6
+  thresh_tcl: 0.25
+  thresh_xvlm: 0.6
 
 best_match_model: xvlm                              # Which model to use for best_[image, text]_match
 
 gpt3:
-    n_votes: 1                                      # Number of tries to use for GPT-3. Use with temperature > 0
-    qa_prompt: ./prompts/gpt3/gpt3_qa.txt
-    guess_prompt: ./prompts/gpt3/gpt3_process_guess.txt
-    temperature: 0.
-    model: gpt-4o-mini
+  n_votes: 1                                      # Number of tries to use for GPT-3. Use with temperature > 0
+  qa_prompt: ./prompts/gpt3/gpt3_qa.txt
+  guess_prompt: ./prompts/gpt3/gpt3_process_guess.txt
+  temperature: 0.
+  model: gpt-4o-mini
 
 # Saving and loading parameters
 save: True                                          # Save the results to a file

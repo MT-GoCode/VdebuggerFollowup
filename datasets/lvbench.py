@@ -1,14 +1,12 @@
 import json
 import os
-import shutil
 
-import pandas as pd
 from torch.utils.data import Dataset
+
 os.environ["DECORD_NUM_THREADS"] = "1"
 os.environ["FFMPEG_THREADS"] = "1"
 import decord
-from decord import cpu, gpu
-import numpy as np
+from decord import cpu
 import spacy
 
 from nltk.tokenize import word_tokenize
@@ -16,13 +14,13 @@ from nltk.corpus import wordnet
 import numpy as np
 
 import nltk
+
 nltk.download('averaged_perceptron_tagger_eng')
 nltk.download('wordnet')
 nltk.download('punkt_tab')
 
 from pywsd.utils import lemmatize_sentence
 from collections import Counter
-import joblib
 from joblib import Memory
 
 CACHE_DIR = "./video_cache"  # Directory to store cached video tensors
@@ -72,6 +70,8 @@ from tqdm import tqdm
 # upgrade: batching
 # @memory.cache
 from functools import lru_cache
+
+
 @lru_cache(maxsize=2)
 def tensorize_video(video_path, fps=30):
     print(f"tensorizing {video_path} ")
@@ -85,7 +85,7 @@ def tensorize_video(video_path, fps=30):
     original_fps = video_reader.get_avg_fps()
     num_frames = int(vlen * fps / original_fps)
     frame_idxs = np.linspace(0, vlen, num_frames, endpoint=False).astype(np.int64)
-    
+
     video_chunks = []
     frame_fetch_batch_size = 2000
 
@@ -94,16 +94,18 @@ def tensorize_video(video_path, fps=30):
     # pre-creating video tensor significantly improves performance apparently... no O(n^2) torch.catting
     video = torch.empty((len(frame_idxs), C, H, W), dtype=torch.uint8)
 
-    print(f"preparations complete. original frames: {vlen}, original fps: {original_fps}, requested fps: {fps}, so final frame count is {len(frame_idxs)} to be processed in batches of {frame_fetch_batch_size}")
+    print(f"preparations complete. original frames: {vlen}, original fps: {original_fps}, requested fps: {fps},"
+          "so final frame count is {len(frame_idxs)} to be processed in batches of {frame_fetch_batch_size}")
     for i in tqdm(range(0, len(frame_idxs), frame_fetch_batch_size), desc="Decoding frames in batches"):
-        batch = frame_idxs[i:i+frame_fetch_batch_size]
+        batch = frame_idxs[i:i + frame_fetch_batch_size]
         video_batch = video_reader.get_batch(batch).byte().permute(0, 3, 1, 2)
         video_chunks.append(video_batch)
-        video[i:i+len(batch)] = video_batch
+        video[i:i + len(batch)] = video_batch
 
     print(f"tensorization finished with {video.shape} and {video.dtype}. if caching turned on, that may take a while. ")
 
     return video
+
 
 def save_file(obj, filename):
     """
@@ -121,8 +123,9 @@ def save_file(obj, filename):
 
 
 class LVBenchDataset(Dataset):
-    def __init__(self, split, data_path, list_path, tokenize=None, max_samples=None, version='openended', fps=30,
-                 start_sample=0, clear_tensor_cache = False, tensor_cache = None, **kwargs):
+    def __init__(self, split, data_path, list_path, tokenize=None, max_samples=None, version='openended',
+                 fps=1 / 120,  # one frame per minute...
+                 start_sample=0, clear_tensor_cache=False, tensor_cache=None, **kwargs):
 
         assert version in ['openended', 'multiplechoice']
 
@@ -145,54 +148,50 @@ class LVBenchDataset(Dataset):
         #     if os.path.exists(self.tensor_cache):
         #         shutil.rmtree(self.tensor_cache)
 
-            # don't delete the directory itself
-            # os.makedirs(self.tensor_cache, exist_ok=True)
-        
+        # don't delete the directory itself
+        # os.makedirs(self.tensor_cache, exist_ok=True)
+
         self.list_path = os.path.expandvars(self.list_path)
-        self.list_path = os.path.expanduser(self.list_path)
-        self.sample_list = pd.read_csv(self.list_path, dtype = str)
-        
+        self.sample_list = []
+        with open(self.list_path) as f:
+            for line in f:
+                line = json.loads(line)
+                for qa in line['qa']:
+                    qa.update(key=line['key'], type=line['type'], video_info=line['video_info'])
+                    self.sample_list.append(qa)
+
         if max_samples is not None:
-            end = start_sample+max_samples
+            end = start_sample + max_samples
             print(f'Subset requested. Only selecting from {start_sample} to {end}')
             # self.sample_list = self.sample_list.sample(n=max_samples)
             self.sample_list = self.sample_list[start_sample:end]
-            print(self.sample_list)
-
-
-        self.sample_ids = self.sample_list.index
 
         self.data_path = os.path.expandvars(self.data_path)
-        self.data_path = os.path.expanduser(self.data_path)
+
+        self.cache_key = ''
+        self.cache_video = None
 
     def get_sample_path(self, index):
-        sample_id = self.sample_ids[index]
-        cur_sample = self.sample_list.loc[sample_id]
+        cur_sample = self.sample_list[index]
         video_name = str(cur_sample['video'])
         video_path = os.path.join(self.data_path, video_name + '.mp4')
         return video_path
 
     def __getitem__(self, idx):
-        print("getting new item. let's check RAM usage -- should be appropriately used based on the number of questions per video & batch size.")
+        print("getting new item. let's check RAM usage -- should be appropriately used "
+              "based on the number of questions per video & batch size.")
         import subprocess
         output = subprocess.check_output(["free", "-h"], text=True)
         print(output)
 
-        sample_id = self.sample_ids[idx]
-        cur_sample = self.sample_list.loc[sample_id]
+        cur_sample = self.sample_list[idx]
 
         question = str(cur_sample['question'])
         if self.tokenize:
             question = self.tokenize(question)
 
-        video_name = str(cur_sample['video'])
-
-        # critical difference from nextqa; videos are stored as siblings - just  merge data_path and video name
-        video_path = os.path.join(self.data_path, video_name + '.mp4')
-
         # if self.tensor_cache:
         #     cache_identifier = f"{video_name}_{self.fps}.pt"
-
         #     cache_path = os.path.join(self.tensor_cache, cache_identifier)
         #     if not os.path.exists(cache_path):
         #         video = tensorize_video(video_path, fps = self.fps)
@@ -202,9 +201,16 @@ class LVBenchDataset(Dataset):
         #         video = torch.load(cache_path)
         #         print(f"video {video_name} tensor fetched from disk")
 
-        video = tensorize_video(video_path, fps = self.fps)
-        print(f"video {video_name} completely finished processing")
-        
+        video_name = str(cur_sample['key'])
+        if video_name == self.cache_key:
+            video = self.cache_video
+        else:
+            video_path = os.path.join(self.data_path, video_name + '.mp4')
+            video = tensorize_video(video_path, fps=self.fps)
+            self.cache_key = cur_sample['key']
+            self.cache_video = video
+            print(f"video {video_name} completely finished processing")
+
         if self.version == 'openended':
             answer = str(cur_sample['answer'])
             if self.tokenize:
@@ -212,18 +218,18 @@ class LVBenchDataset(Dataset):
             possible_answers = ''
         else:  # multiple choice
             answer = str(cur_sample['answer'])
-            possible_answers = [str(cur_sample[f'a{i}']) for i in range(4)] # only four answers!
+            possible_answers = [str(cur_sample[f'a{i}']) for i in range(4)]  # only four answers!
 
         query_type = str(cur_sample['type'])
 
-        out_dict = {"sample_id": sample_id, "answer": answer, "image": video, "query": question, 'pil_img': -1,
-                    "query_type": query_type, 'index': idx, 'possible_answers': possible_answers,
+        out_dict = {"sample_id": cur_sample['uid'], "answer": answer, "image": video, "query": question,
+                    'pil_img': -1, "query_type": query_type, 'index': idx, 'possible_answers': possible_answers,
                     'extra_context': possible_answers}
 
         return out_dict
 
     def __len__(self):
-        return self.sample_list.shape[0]
+        return len(self.sample_list)
 
     def accuracy(self, prediction, ground_truth, possible_answers, query_type):
         """
@@ -299,7 +305,6 @@ stopwords = "i, me, my, myself, we, our, ours, ourselves, you, you're, you've, y
 
 
 def remove_stop(sentence):
-
     words = lemmatize_sentence(sentence)
     words = [w for w in words if not w in stopwords]
     return ' '.join(words)
@@ -324,13 +329,13 @@ def wup(word1, word2, alpha):
     w2_len = len(w2)
     if w2_len == 0: return 0.0
 
-    #match the first
+    # match the first
     word_sim = w1[0].wup_similarity(w2[0])
     if word_sim is None:
         word_sim = 0.0
 
     if word_sim < alpha:
-        word_sim = 0.1*word_sim
+        word_sim = 0.1 * word_sim
     return word_sim
 
 

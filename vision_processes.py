@@ -16,6 +16,8 @@ from configs import config
 
 console = Console(highlight=False)
 
+stage_execution_config = config.stage_execution
+
 if mp.current_process().name == 'MainProcess':
     # No need to initialize the models inside each process
     import vision_models
@@ -24,7 +26,8 @@ if mp.current_process().name == 'MainProcess':
                    if issubclass(m[1], vision_models.BaseModel) and m[1] != vision_models.BaseModel]
     # Sort by attribute "load_order"
     list_models.sort(key=lambda x: x.load_order)
-    if config.multiprocessing:
+
+    if stage_execution_config.multiprocessing:
         manager = mp.Manager()
     else:
         manager = None
@@ -33,52 +36,33 @@ else:
     manager = None
 
 
-def make_fn(model_class, process_name, counter):
+def make_fn(model_instance, process_name, multiprocessing):
     """
     model_class.name and process_name will be the same unless the same model is used in multiple processes, for
     different tasks
     """
-    # We initialize each one on a separate GPU, to make sure there are no out of memory errors
-    num_gpus = torch.cuda.device_count()
-    gpu_number = counter % num_gpus
 
-    model_instance = model_class(gpu_number=gpu_number)
+    def _function(**kwargs):
+        # inform the model instance what process is running
+        kwargs['process_name'] = process_name
 
-    def _function(*args, **kwargs):
-        if process_name != model_class.name:
-            kwargs['process_name'] = process_name
-
-        if model_class.to_batch and not config.multiprocessing:
+        if model_instance.to_batch and not multiprocessing:
             # Batchify the input. Model expects a batch. And later un-batchify the output.
-            args = [[arg] for arg in args]
             kwargs = {k: [v] for k, v in kwargs.items()}
 
-            # The defaults that are not in args or kwargs, also need to listify
-            full_arg_spec = inspect.getfullargspec(model_instance.forward)
-            if full_arg_spec.defaults is None:
-                default_dict = {}
-            else:
-                default_dict = dict(zip(full_arg_spec.args[-len(full_arg_spec.defaults):], full_arg_spec.defaults))
-            non_given_args = full_arg_spec.args[1:][len(args):]
-            non_given_args = set(non_given_args) - set(kwargs.keys())
-            for arg_name in non_given_args:
-                kwargs[arg_name] = [default_dict[arg_name]]
+            # use no args. and default args must be handled in forward logic
 
-        try:
-            out = model_instance.forward(*args, **kwargs)
-            if model_class.to_batch and not config.multiprocessing:
-                out = out[0]
-        except Exception as e:
-            import traceback
-            print(f'Error in {process_name} model:', e)
-            traceback.print_exc()
-            out = None
+        # used to be try/except here... but i want all errors to propogate to the run_program handler
+
+        out = model_instance.forward(**kwargs)
+        if model_instance.to_batch and not multiprocessing:
+            out = out[0]
         return out
 
     return _function
 
 
-if config.multiprocessing:
+if stage_execution_config.multiprocessing:
 
     def make_fn_process(model_class, process_name, counter):
 
@@ -131,11 +115,10 @@ if config.multiprocessing:
                         print(f'{process_name} exiting')
                         return
                     (args, kwargs), queue_out = received
-                    out = fn(*args, **kwargs)
+                    out = fn(**kwargs)
                     queue_out.put(out)
 
         return _function
-
 
     if mp.current_process().name == 'MainProcess':
         queues_in: Union[dict[str, mp.Queue], None] = dict()
@@ -163,7 +146,6 @@ if config.multiprocessing:
     else:
         queues_in = None
 
-
     def finish_all_consumers():
         # Wait for consumers to finish
         for q_in in queues_in.values():
@@ -172,15 +154,21 @@ if config.multiprocessing:
             cons.join()
 
 else:
-
     consumers = dict()
-
     counter_ = 0
+
+    # We try to initialize each model on a separate GPU, to make sure there are no out of memory errors
+    num_gpus = torch.cuda.device_count()
+
+    gpu_number = counter_ % num_gpus
+    model_instance_map = {}
+
     for model_class_ in list_models:
+        if model_class_.name in stage_execution_config.models and stage_execution_config.models[model_class_.name].load:
+            model_instance = model_class_(gpu_number=gpu_number)
+        
         for process_name_ in model_class_.list_processes():
-            if process_name_ in config.load_models and config.load_models[process_name_] or process_name_ == config.code_gen.model_class:
-                consumers[process_name_] = make_fn(model_class_, process_name_, counter_)
-                counter_ += 1
+            consumers[process_name_] = make_fn(model_instance, process_name_, stage_execution_config.multiprocessing)
 
     queues_in = None
 
@@ -188,17 +176,17 @@ else:
         pass
 
 
-def forward(model_name, *args, queues=None, **kwargs):
+def forward(process_name, queues=None, **kwargs):
     """
     Sends data to consumer (calls their "forward" method), and returns the result
     """
-    error_msg = f'No model named {model_name}. ' \
-                'The available models are: {}. Make sure to activate it in the configs files'
-    if not config.multiprocessing:
-        try:
-            out = consumers[model_name](*args, **kwargs)
-        except KeyError as e:
-            raise KeyError(error_msg.format(list(consumers.keys()))) from e
+    error_msg = f'No process called {process_name}. ' \
+                'The available processes are: {}. Make sure to activate its parent model in the config files'
+    if not stage_execution_config.multiprocessing:
+        # do NOT except a key error here. key errors can happen internally/in consumers
+        if process_name not in consumers.keys():
+            raise KeyError(error_msg.format(list(consumers.keys())))
+        out = consumers[process_name](**kwargs)
     else:
         if queues is None:
             consumer_queues_in, queue_results = None, None
@@ -206,9 +194,9 @@ def forward(model_name, *args, queues=None, **kwargs):
             consumer_queues_in, queue_results = queues
         try:
             if consumer_queues_in is not None:
-                consumer_queue_in = consumer_queues_in[model_name]
+                consumer_queue_in = consumer_queues_in[process_name]
             else:
-                consumer_queue_in = queues_in[model_name]
+                consumer_queue_in = queues_in[process_name]
         except KeyError as e:
             options = list(consumer_queues_in.keys()) if consumer_queues_in is not None else list(queues_in.keys())
             raise KeyError(error_msg.format(options)) from e
@@ -216,7 +204,7 @@ def forward(model_name, *args, queues=None, **kwargs):
             # print('No queue exists to get results. Creating a new one, but this is inefficient. '
             #       'Consider providing an existing queue for the process')
             queue_results = manager.Queue()  # To get outputs
-        consumer_queue_in.put([(args, kwargs), queue_results])
+        consumer_queue_in.put([(kwargs), queue_results])
         out = queue_results.get()  # Wait for result
     return out
 

@@ -16,6 +16,29 @@ from vision_processes import forward, config
 
 console = Console(highlight=False)
 
+image_patch_api_config = config.stage_execution.image_patch
+models_config = config.stage_execution.models
+
+def llm_query(query, long_answer=True, queues=None):
+    """Answers a text question using GPT. The input question is always a formatted string with a variable in it.
+
+    Parameters
+    ----------
+    query: str
+        the text question to ask. Must not contain any reference to 'the image' or 'the photo', etc.
+    """
+    if long_answer:
+        return forward(
+            process_name='gpt_long_qa',
+            question=query,
+            queues=queues
+        )
+    else:
+        return forward(
+            process_name='gpt_short_qa',
+            question=query,
+            queues=queues
+        )
 
 class ImagePatch:
     """A Python class containing a crop of an image centered around a particular object, as well as relevant
@@ -111,8 +134,8 @@ class ImagePatch:
 
         self.possible_options = load_json('./useful_lists/possible_options.json')
 
-    def forward(self, model_name, *args, **kwargs):
-        return forward(model_name, *args, queues=self.queues, **kwargs)
+    def forward(self, **kwargs):
+        return forward(queues=self.queues, **kwargs)
 
     @property
     def original_image(self):
@@ -135,17 +158,20 @@ class ImagePatch:
             a list of ImagePatch objects matching object_name contained in the crop
         """
         if object_name in ["object", "objects"]:
-            all_object_coordinates = self.forward('maskrcnn', self.cropped_image)[0]
+            all_object_coordinates = self.forward(process_name = 'maskrcnn_find',
+                                                  image = self.cropped_image)[0]
         else:
 
             if object_name == 'person':
                 object_name = 'people'  # GLIP does better at people than person
 
-            all_object_coordinates = self.forward('glip', self.cropped_image, object_name)
+            all_object_coordinates = self.forward(process_name = 'glip_find',
+                                                  image = self.cropped_image,
+                                                  obj = object_name)
         if len(all_object_coordinates) == 0:
             return []
 
-        threshold = config.ratio_box_area_to_image_area
+        threshold = image_patch_api_config.find.ratio_box_area_to_image_area
         if threshold > 0:
             area_im = self.width * self.height
             all_areas = torch.tensor([(coord[2]-coord[0]) * (coord[3]-coord[1]) / area_im
@@ -154,7 +180,6 @@ class ImagePatch:
             # if not mask.any():
             #     mask = all_areas == all_areas.max()  # At least return one element
             all_object_coordinates = all_object_coordinates[mask]
-
 
         return [self.crop(*coordinates) for coordinates in all_object_coordinates]
 
@@ -180,26 +205,6 @@ class ImagePatch:
                 filtered_patches.append(patch)
         return len(filtered_patches) > 0
 
-    def _score(self, category: str, negative_categories=None, model='clip') -> float:
-        """
-        Returns a binary score for the similarity between the image and the category.
-        The negative categories are used to compare to (score is relative to the scores of the negative categories).
-        """
-        if model == 'clip':
-            res = self.forward('clip', self.cropped_image, category, task='score',
-                               negative_categories=negative_categories)
-        elif model == 'tcl':
-            res = self.forward('tcl', self.cropped_image, category, task='score')
-        else:  # xvlm
-            task = 'binary_score' if negative_categories is not None else 'score'
-            res = self.forward('xvlm', self.cropped_image, category, task=task, negative_categories=negative_categories)
-            res = res.item()
-
-        return res
-
-    def _detect(self, category: str, thresh, negative_categories=None, model='clip') -> bool:
-        return self._score(category, negative_categories, model) > thresh
-
     def verify_property(self, object_name: str, attribute: str) -> bool:
         """Returns True if the object possesses the property, and False otherwise.
         Differs from 'exists' in that it presupposes the existence of the object specified by object_name, instead
@@ -212,16 +217,30 @@ class ImagePatch:
             A string describing the property to be checked.
         """
         name = f"{attribute} {object_name}"
-        model = config.verify_property.model
+        process_name = image_patch_api_config.verify_property.use_process
         negative_categories = [f"{att} {object_name}" for att in self.possible_options['attributes']]
-        if model == 'clip':
-            return self._detect(name, negative_categories=negative_categories,
-                                thresh=config.verify_property.thresh_clip, model='clip')
-        elif model == 'tcl':
-            return self._detect(name, thresh=config.verify_property.thresh_tcl, model='tcl')
-        else:  # 'xvlm'
-            return self._detect(name, negative_categories=negative_categories,
-                                thresh=config.verify_property.thresh_xvlm, model='xvlm')
+        
+        # not using
+        # if process_name == 'clip_verify_property':
+            # score = self.forward(process_name = process_name,
+            #                      image = self.cropped_image,
+            #                      category = name,
+            #                      negative_categories=negative_categories)
+            # thresh = models_config.clip.processes.clip_verify_property.threshold
+        # if process_name == 'tcl_verify_property':
+        #     score = self.forward(, self.cropped_image, name, task='score')
+        #     thresh = models_config.clip.processes.clip_verify_property.threshold
+        if process_name == 'xvlm_verify_property':
+            binary_score = negative_categories is not None 
+            score = self.forward(process_name = process_name,
+                                 image = self.cropped_image,
+                                 text = name,
+                                 binary_score=binary_score,
+                                 negative_categories=negative_categories)
+            score = score.item()
+            thresh = models_config.xvlm.processes.xvlm_verify_property.threshold
+        
+        return score > thresh
 
     def best_text_match(self, option_list: list[str] = None, prefix: str = None) -> str:
         """Returns the string that best matches the image.
@@ -236,13 +255,16 @@ class ImagePatch:
         if prefix is not None:
             option_list_to_use = [prefix + " " + option for option in option_list]
 
-        model_name = config.best_match_model
+        process_name = image_patch_api_config.best_text_match.use_process
         image = self.cropped_image
         text = option_list_to_use
-        if model_name in ('clip', 'tcl'):
-            selected = self.forward(model_name, image, text, task='classify')
-        elif model_name == 'xvlm':
-            res = self.forward(model_name, image, text, task='score')
+        # if process_name in ('clip', 'tcl'):
+        #     selected = self.forward(process_name, image, text, task='classify')
+        if process_name == 'xvlm_best_text_match':
+            res = self.forward(process_name = process_name,
+                               image = image,
+                               text = text,
+                               binary_score = False)
             res = res.argmax().item()
             selected = res
         else:
@@ -259,22 +281,30 @@ class ImagePatch:
         question : str
             A string describing the question to be asked.
         """
-        return self.forward('blip', self.cropped_image, question, task='qa')
+        return self.forward(
+            process_name = 'blip_qa',
+            image = self.cropped_image,
+            question = question
+        )
 
-    def compute_depth(self):
-        """Returns the median depth of the image crop
-        Parameters
-        ----------
-        Returns
-        -------
-        float
-            the median depth of the image crop
-        """
-        original_image = self.original_image
-        depth_map = self.forward('depth', original_image)
-        depth_map = depth_map[original_image.shape[1]-self.upper:original_image.shape[1]-self.lower,
-                              self.left:self.right]
-        return depth_map.median()  # Ideally some kind of mode, but median is good enough for now
+    ### OBSOLETE - NOT USED
+    # def compute_depth(self):
+    #     """Returns the median depth of the image crop
+    #     Parameters
+    #     ----------
+    #     Returns
+    #     -------
+    #     float
+    #         the median depth of the image crop
+    #     """
+    #     original_image = self.original_image
+    #     depth_map = self.forward(
+    #         process_name = 'midas_depth',
+    #         image = original_image
+    #     )
+    #     depth_map = depth_map[original_image.shape[1]-self.upper:original_image.shape[1]-self.lower,
+    #                           self.left:self.right]
+    #     return depth_map.median()  # Ideally some kind of mode, but median is good enough for now
 
     def crop(self, left: int, lower: int, right: int, upper: int) -> ImagePatch:
         """Returns a new ImagePatch containing a crop of the original image at the given coordinates.
@@ -300,7 +330,7 @@ class ImagePatch:
         right = int(right)
         upper = int(upper)
 
-        if config.crop_larger_margin:
+        if image_patch_api_config.crop.crop_larger_margin:
             left = max(0, left - 10)
             lower = max(0, lower - 10)
             right = min(self.width, right + 10)
@@ -338,44 +368,6 @@ class ImagePatch:
 
     def __repr__(self):
         return "ImagePatch({}, {}, {}, {})".format(self.left, self.lower, self.right, self.upper)
-
-
-def best_image_match(list_patches: list[ImagePatch], content: List[str], return_index: bool = False) -> \
-        Union[ImagePatch, None]:
-    """Returns the patch most likely to contain the content.
-    Parameters
-    ----------
-    list_patches : List[ImagePatch]
-    content : List[str]
-        the object of interest
-    return_index : bool
-        if True, returns the index of the patch most likely to contain the object
-
-    Returns
-    -------
-    int
-        Patch most likely to contain the object
-    """
-    if len(list_patches) == 0:
-        return None
-
-    model = config.best_match_model
-
-    scores = []
-    for cont in content:
-        if model == 'clip':
-            res = list_patches[0].forward(model, [p.cropped_image for p in list_patches], cont, task='compare',
-                                          return_scores=True)
-        else:
-            res = list_patches[0].forward(model, [p.cropped_image for p in list_patches], cont, task='score')
-        scores.append(res)
-    scores = torch.stack(scores).mean(dim=0)
-    scores = scores.argmax().item()  # Argmax over all image patches
-
-    if return_index:
-        return scores
-    return list_patches[scores]
-
 
 def distance(patch_a: Union[ImagePatch, float], patch_b: Union[ImagePatch, float]) -> float:
     """
@@ -420,22 +412,12 @@ def bool_to_yesno(bool_answer: bool) -> str:
     return "yes" if bool_answer else "no"
 
 
-def llm_query(query, context=None, long_answer=True, queues=None):
-    """Answers a text question using GPT-3. The input question is always a formatted string with a variable in it.
-
-    Parameters
-    ----------
-    query: str
-        the text question to ask. Must not contain any reference to 'the image' or 'the photo', etc.
-    """
-    if long_answer:
-        return forward(model_name='gpt3_general', prompt=query, queues=queues)
-    else:
-        return forward(model_name='gpt3_qa', prompt=[query, context], queues=queues)
-
-
 def process_guesses(prompt, guess1=None, guess2=None, queues=None):
-    return forward(model_name='gpt3_guess', prompt=[prompt, guess1, guess2], queues=queues)
+    return forward(
+        process_name='gpt_guess',
+        prompt=[prompt, guess1, guess2],
+        queues=queues
+    )
 
 
 def coerce_to_numeric(string, no_string=False):
@@ -484,3 +466,41 @@ def coerce_to_numeric(string, no_string=False):
         # No numeric values. Return input
         return string
     return numeric
+
+def best_image_match(list_patches: list[ImagePatch], content: List[str], return_index: bool = False) -> \
+        Union[ImagePatch, None]:
+    """Returns the patch most likely to contain the content.
+    Parameters
+    ----------
+    list_patches : List[ImagePatch]
+    content : List[str]
+        the object of interest
+    return_index : bool
+        if True, returns the index of the patch most likely to contain the object
+
+    Returns
+    -------
+    int
+        Patch most likely to contain the object
+    """
+    if len(list_patches) == 0:
+        return None
+
+    scores = []
+    for cont in content:
+        res = list_patches[0].forward(
+            process_name = 'clip_best_image_match',
+            images = [p.cropped_image for p in list_patches],
+            prompt = cont,
+            return_scores=True
+        )
+        scores.append(res)
+    scores = torch.stack(scores).mean(dim=0)
+
+    # (we're voting; content may be different descriptions of the same intended thing)
+    scores = scores.argmax().item()  # Argmax over all image patches
+
+    if return_index:
+        return scores
+    return list_patches[scores]
+

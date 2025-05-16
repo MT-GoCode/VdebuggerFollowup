@@ -64,8 +64,8 @@ class VideoSegment:
         if self.trimmed_video.shape[0] == 0:
             raise Exception("VideoSegment has duration=0")
 
-    def forward(self, model_name, *args, **kwargs):
-        return forward(model_name, *args, queues=self.queues, **kwargs)
+    def forward(self, **kwargs):
+        return forward(queues=self.queues, **kwargs)
 
     def frame_from_index(self, index) -> ImagePatch:
         """Returns the frame at position 'index', as an ImagePatch object."""
@@ -103,11 +103,13 @@ class VideoSegment:
             if isinstance(x, dict):
                 x = ''.join([f'\n\t- {k}: {format_dict(v)}' for k, v in x.items()])
             return x
-        with open(config.select_answer_prompt, 'r') as f:
-            prompt = f.read()
+        
         info_formatting = '\n'.join([f"- {k}: {format_dict(v)}" for k, v in info.items()])
-        prompt = prompt.format(info=info_formatting, question=question, options=options)
-        answer = self.forward('gpt3_general', prompt)
+
+        answer = self.forward(process_name = 'gpt_select_best_answer_mcq',
+                              question = question,
+                              info = info_formatting,
+                              options = options)
         answer = answer.strip()
         return answer
 

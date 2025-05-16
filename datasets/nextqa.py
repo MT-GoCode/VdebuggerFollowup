@@ -12,14 +12,11 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import wordnet
 import numpy as np
 
-import nltk
-nltk.download('averaged_perceptron_tagger_eng')
-nltk.download('wordnet')
-nltk.download('punkt_tab')
 
 from pywsd.utils import lemmatize_sentence
 from collections import Counter
 
+from context import context
 
 def load_file(file_name):
     annos = None
@@ -50,31 +47,29 @@ def save_file(obj, filename):
             json.dump(obj, fp, indent=4)
 
 
-class NExTQADataset(Dataset):
-    def __init__(self, data_path, list_path, tokenize=None, max_samples=None, version='openended', fps=30,
-                 max_num_frames=30, start_sample=0, shuffle=False, shuffle_seed=42, **kwargs):
+class NExTQADataset():
+    def __init__(self, **kwargs):
 
-        assert version in ['openended', 'multiplechoice']
-        directory = 'nextqa' if version == 'multiplechoice' else 'nextoe'
+        assert kwargs["version"] in ['openended', 'multiplechoice']
+        directory = 'nextqa' if kwargs["version"] == 'multiplechoice' else 'nextoe'
 
-        self.data_path = data_path
-        self.list_path = list_path
-        self.tokenize = tokenize
-        self.version = version
-        self.fps = fps
-        self.input_type = 'video'
-        self.max_num_frames = max_num_frames
+        self.data_path = kwargs["data_path"]
+        self.list_path = kwargs["list_path"]
+        self.version = kwargs["version"]
+        self.sample_fps = kwargs["sample_fps"]
+        self.max_num_frames = kwargs["max_num_frames"]
 
         # sample_list_path = os.path.join(self.data_path, directory, f'{split}.csv')
         self.list_path = os.path.expandvars(self.list_path)
         self.list_path = os.path.expanduser(self.list_path)
         self.sample_list = pd.read_csv(self.list_path, dtype = str)
 
-        if shuffle:
-            self.sample_list = self.sample_list.sample(frac=1, random_state=shuffle_seed).reset_index(drop=True)
+        if kwargs["shuffle"]:
+            self.sample_list = self.sample_list.sample(frac=1, random_state=kwargs["shuffle_seed"]).reset_index(drop=True)
         
-        if max_samples is not None:
-            end = start_sample+max_samples
+        if kwargs["max_samples"] is not None:
+            start_sample = kwargs.get('start_sample',0)
+            end = start_sample+kwargs["max_samples"]
             print(f'Subset requested. Only selecting from {start_sample} to {end}')
             # self.sample_list = self.sample_list.sample(n=max_samples)
             self.sample_list = self.sample_list[start_sample:end]
@@ -85,9 +80,6 @@ class NExTQADataset(Dataset):
         self.sample_id_to_index = {sample_id: idx for idx, sample_id in enumerate(self.sample_ids)}
 
         self.video_to_dir = {}
-        # for directory in os.listdir(os.path.join(self.data_path, 'videos')):
-        #     for video in os.listdir(os.path.join(self.data_path, 'videos', directory)):
-        #         self.video_to_dir[video.split('.')[0]] = directory
         
         self.data_path = os.path.expandvars(self.data_path)
         self.data_path = os.path.expanduser(self.data_path)
@@ -117,16 +109,11 @@ class NExTQADataset(Dataset):
         return video
 
     def __getitem__(self, idx):
+
         sample_id = self.sample_ids[idx]
         cur_sample = self.sample_list.loc[sample_id]
 
         question = str(cur_sample['question'])
-        if self.tokenize:
-            question = self.tokenize(question)
-
-        video_name = str(cur_sample['video'])
-        video_path = os.path.join(self.data_path, self.video_to_dir[video_name], video_name + '.mp4')
-        video = self.get_video(video_path)
 
         if self.version == 'openended':
             answer = str(cur_sample['answer'])
@@ -137,12 +124,27 @@ class NExTQADataset(Dataset):
             answer_idx = int(cur_sample['answer'])
             possible_answers = [str(cur_sample[f'a{i}']) for i in range(5)]
             answer = possible_answers[answer_idx]
+        if context.get_stage() == 1:
+            out_dict = {
+                "id": str(sample_id),
+                
+                "query": question,
+                "extra_context": str(possible_answers)
+            }
+        elif context.get_stage() == 2:
+            video_name = str(cur_sample['video'])
+            video_path = os.path.join(self.data_path, self.video_to_dir[video_name], video_name + '.mp4')
+            video = self.get_video(video_path)
 
-        query_type = str(cur_sample['type'])
+            out_dict = {
+                "id": str(sample_id),
 
-        out_dict = {"sample_id": sample_id, "answer": answer, "image": video, "query": question, 'pil_img': -1,
-                    "query_type": query_type, 'index': idx, 'possible_answers': possible_answers,
-                    'extra_context': possible_answers}
+                "video": video,
+                "query": question,
+                "possible_answers": possible_answers,
+                
+                "answer": answer
+            }
 
         return out_dict
 
@@ -152,7 +154,7 @@ class NExTQADataset(Dataset):
     def get_index_from_sample_id(self, sample_id):
         return self.sample_id_to_index[sample_id]
 
-    def accuracy(self, prediction, ground_truth, possible_answers, query_type):
+    def accuracy(self, prediction, ground_truth):
         """
         Args:
             prediction (list): List of predicted answers.
@@ -166,48 +168,21 @@ class NExTQADataset(Dataset):
         assert len(prediction) == len(ground_truth)
         score = 0
 
-        if self.version == 'openended':
-            for p, g, qt in zip(prediction, ground_truth, query_type):
-                if isinstance(p, list) or isinstance(p, tuple):
-                    p = p[0]  # p[1] is the info dict
-                if p is None:
-                    print('None case')
-                    p = 'object'  # To select some word
-                if qt == 'DC' or qt == 'DB':
-                    s = 1 if remove_stop(p) == remove_stop(g) else 0
-                else:
-                    s = get_wups(remove_stop(p), remove_stop(g), 0)
-                score += 100 * s
-        else:
-            nlp = spacy.load('en_core_web_lg')
-            for p, g, a in zip(prediction, ground_truth, possible_answers):
-                if isinstance(p, list) or isinstance(p, tuple):
-                    if len(p) == 2:
-                        p = p[0]  # p[1] is the info dict
-                    else:  # Multiple predictions
-                        all_answers = []
-                        for pp in p:
-                            if pp not in a:
-                                pred_tokens = nlp(pp)
-                                a.sort(key=lambda x: pred_tokens.similarity(nlp(x)), reverse=True)
-                                pp = a[0]
-                            all_answers.append(pp)
-                        # Majority vote
-                        c = Counter(all_answers).most_common(1)[0]
-                        if c[1] == 1:
-                            # If no majority, select the middle one
-                            p = all_answers[1]
-                        else:
-                            p = c[0]
-                if p not in a:
-                    if p is None:
-                        print('None case')  # Should not happen
-                    else:
-                        pred_tokens = nlp(p)
-                        a.sort(key=lambda x: pred_tokens.similarity(nlp(x)), reverse=True)
-                    p = a[0]
-                if p == g:
-                    score += 1
+        # if self.version == 'openended':
+        #     for p, g, qt in zip(prediction, ground_truth, query_type):
+        #         if isinstance(p, list) or isinstance(p, tuple):
+        #             p = p[0]  # p[1] is the info dict
+        #         if p is None:
+        #             print('None case')
+        #             p = 'object'  # To select some word
+        #         if qt == 'DC' or qt == 'DB':
+        #             s = 1 if remove_stop(p) == remove_stop(g) else 0
+        #         else:
+        #             s = get_wups(remove_stop(p), remove_stop(g), 0)
+        #         score += 100 * s
+        if self.version == 'multiplechoice':
+            score = sum(1 for p, g in zip(prediction, ground_truth) if p == g)
+
         return score / len(prediction)
 
 

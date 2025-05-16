@@ -17,6 +17,8 @@ class ImagePatch:
         image matching the object_name.
     exists(object_name: str)->bool
         Returns True if the object specified by object_name is found in the image, and False otherwise.
+    verify_property(property: str)->bool
+        Returns True if the property is met, and False otherwise.
     best_text_match(option_list: List[str], prefix: str)->str
         Returns the string that best matches the image.
     simple_query(question: str=None)->str
@@ -183,6 +185,26 @@ class ImagePatch:
         """
         return self.left <= right and self.right >= left and self.lower <= upper and self.upper >= lower
 
+    def verify_property(self, object_name: str, visual_property: str) -> bool:
+        """Returns True if the object possesses the visual property, and False otherwise.
+        Differs from 'exists' in that it presupposes the existence of the object specified by object_name, instead checking whether the object possesses the property.
+        Parameters
+        -------
+        object_name : str
+            A string describing the name of the object to be found in the image.
+        visual_property : str
+            A string describing the simple visual property (e.g., color, shape, material) to be checked.
+
+        Examples
+        -------
+        >>> # Do the letters have blue color?
+        >>> def execute_command(image) -> str:
+        >>>     image_patch = ImagePatch(image)
+        >>>     letters_patches = image_patch.find("letters")
+        >>>     # Question assumes only one letter patch
+        >>>     return bool_to_yesno(letters_patches[0].verify_property("letters", "blue"))
+        """
+        return verify_property(self.cropped_image, object_name, property)
 
 def best_image_match(list_patches: List[ImagePatch], content: List[str], return_index=False) -> Union[ImagePatch, int]:
     """Returns the patch most likely to contain the content.
@@ -582,6 +604,6 @@ def execute_command(video, possible_answers, query)->[str, dict]:
 # You are allowed to use imports, but please place them within the function, and only import from built-in libraries. Do not use any non-built-in libraries.
 # This function must return the correct answer by the end. There must be a return statement!
 
-# INSERT_QUERY_HERE
-# possible answers: EXTRA_CONTEXT_HERE
-def execute_command(INSERT_TYPE_HERE):
+# $query$
+# possible answers: $extra_context$
+def execute_command(video):

@@ -10,6 +10,11 @@ cd VIPER
 mkdir datasets
 
 # Three environments will be set up. Keep an eye out.
+# Environments are finicky because we need one environment whose torch version's wheels must be the exact same as the cuda driver (glip-compile) to support building, and one environment for running whose torch version's wheels isn't as strictly required to be same as driver & architecture, but should still be compatible...
+# Optimally, you have a certain architecture with a CUDA driver meant to be used with it, and you (1) compile GLIP and (2) run with torch wheels which match this driver exactly.
+# if the architecture-driver mismatch (ex. driver is a bit ahead of the time when architecture came out), some work will need to be done. Here's what has worked:
+# On a machine with 1080Ti's and CUDA 12.8 driver, the 12.8 driver was far ahead of the 1080Ti. So I used torch with (1) 12.8 wheels for glip-compile environment and (2) 11.8 wheels for the viper-main environment. Somehow, at time of running, these two environments were compatible. 
+# On a machine with A6000s and CUDA 12.8 / 12.6 driver, used torch with 12.8 / 12.6 wheels for viper-main environment and torch with 12.8 / 12.6 wheels for glip-compile environment. In a situation like this, the viper-main environment CAN BE REUSED FOR GLIP COMPILATION--do not create a new conda glip-compile env in this case.
 
 # Initial repository setup
 git clone https://github.com/MT-GoCode/VdebuggerFollowup.git
@@ -17,15 +22,21 @@ cd VdebuggerFollowup
 
 conda create -n viper-main python=3.10 -y
 conda activate viper-main
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # Install the torch wheels that are most compatible with the underlying architecture. We had 1080 Ti's, despite 12.8 driver installed, 11.8 wheels is the right one to install.
+# Install the torch wheels that are most compatible with the underlying architecture. We had 1080 Ti's, despite 12.8 driver installed, 11.8 wheels is the right one to install.
+# Remember to change 5 parts of this command! torch version, torch wheels, torchvision version, torchvision wheels, index url
+# Here are some that work:
+# pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+# pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 
 pip install numpy
 pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd dotenv
+pip install vllm==0.8.4 # This is important! The package maintainers are updating fast and official version 0.8.5 is bronke :(
+pip install git+https://github.com/openai/CLIP.git
 
 chmod +x download_models.sh # needs gdown
 ./download_models.sh
 
-pip install --upgrade transformers==4.47 tokenizers==0.21.0 # make sure these two have compatible versions with one another. This will mess up BLIP2 if not done properly
+pip install transformers==4.51.3 tokenizers==0.21.0 # make sure these two have compatible versions with one another. This will mess up BLIP2 if not done properly
 
 # Building GLIP
 conda deactivate 
@@ -37,10 +48,11 @@ cd GLIP
 
 conda create -n glip-compile python=3.10 -y
 conda activate glip-compile
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 # Install the wheels that are compatible with the installed CUDA driver version, regardless of what hardware is. we had 12.8 Driver with older 1080Ti's.
+# Install the wheels that are compatible with the installed CUDA driver version, regardless of what hardware is. we had 12.8 Driver with older 1080Ti's.
+# here are some examples:
+# pip install torch==2.6.0+cu128 --index-url https://download.pytorch.org/whl/cu128 
 
 git checkout cuda-128-compat # switch to the branch compatible with your driver. i made changes to GLIP so it would work in 12.8 and modern numpy. This is all to get setup.py to run. 
-# BTW, cuda-128-compat was tested and also works with: CUDA Driver 12.6
 
 python setup.py build develop --user
 
@@ -53,7 +65,7 @@ python -m spacy download en_core_web_lg
 ```
 ```
 # To be run once you've set up a proper config & dataset.
-CUDA_VISIBLE_DEVICES=... CONFIG=lvbench PYTHONPATH=./GLIP python main_batch.py
+CUDA_VISIBLE_DEVICES=... CONFIG_PATH=./configs/nextqa.yaml python main_batch.py
 ```
 
 ## DATASETS
@@ -78,6 +90,36 @@ wget https://raw.githubusercontent.com/doc-doc/NExT-QA/main/dataset/nextqa/val.c
 
 ```
 ### LVBench:
+```
+conda deactivate
+conda create -n lvbench-dl python=3.10 -y
+conda activate lvbench-dl
+
+pip install huggingface_hub
+
+cd VIPER/datasets
+mkdir LVBench
+cd LVBench
+
+mkdir raw_zips && cd raw_zips 
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='AIWinter/LVBench', repo_type='dataset', local_dir='LVBench')"
+
+cd ..
+cat raw_zips/all_videos_split.zip.* > combined.zip
+unzip combined.zip
+
+wget https://huggingface.co/datasets/THUDM/LVBench/resolve/main/video_info.meta.jsonl
+
+mkdir csvs
+
+# copy and paste lvbenchcsv_generator.py here
+
+python lvbenchcsv_generator.py
+```
+
+# Obsolete
+
+### LV Bench complete setup instructions via download from youtube
 ```
 conda create -n lvbench-dl python=3.10 -y
 
@@ -172,7 +214,6 @@ for f in ../raw_videos/*; do
 done
 ```
 Lastly, copy-paste the lvbenchcsv_generator.py into the LVBench folder and run it to produce a dataset CSV that will be used in the primary pipeline.
-
 
 ## Setup Appendix 
 

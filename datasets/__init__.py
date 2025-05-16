@@ -9,7 +9,7 @@ from torchvision import transforms
 
 # ----------------------------- General for all datasets ----------------------------- #
 def get_dataset(config_dataset):
-    dataset_name = config_dataset.dataset_name
+    dataset_name = config_dataset.name
 
     if dataset_name == 'RefCOCO':
         from datasets.refcoco import RefCOCODataset

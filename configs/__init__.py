@@ -1,8 +1,10 @@
 import os
 from omegaconf import OmegaConf
 
-config = os.getenv('CONFIG', None)
-if config is None:
-    print("Must pass a valid config file name in /configs to the CONFIG variable.")
+config_path = os.getenv('CONFIG_PATH', None)
+if config_path is None:
+    print("Must pass a valid relative yaml filepath to the CONFIG variable.")
 
-config = OmegaConf.load(f'configs/{config}.yaml')
+config = OmegaConf.load(config_path)
+
+config._metadata_path = config_path

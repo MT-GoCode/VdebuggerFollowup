@@ -5,6 +5,8 @@ import pathlib
 from functools import partial
 import warnings
 import traceback
+import importlib
+import time
 
 
 import pandas as pd
@@ -13,7 +15,6 @@ from joblib import Memory
 from num2words import num2words
 import numpy as np
 from omegaconf import OmegaConf
-from rich.console import Console
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -25,367 +26,319 @@ import json
 # See https://github.com/pytorch/pytorch/issues/11201, https://github.com/pytorch/pytorch/issues/973
 # Not for dataloader, but for multiprocessing batches
 mp.set_sharing_strategy('file_system')
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 queue_results = None
 
 cache = Memory('cache/' if config.use_cache else None, verbose=0)
 runs_dict = {}
 seed_everything()
-console = Console(highlight=False)
 
+if config.clear_cache:
+    cache.clear()
 
 def my_collate(batch):
-    # Avoid stacking images (different size). Return everything as a list
+    # Avoid stacking images (different size). Return everything as a list (avoid tensorizing batches)
     to_return = {k: [d[k] for d in batch] for k in batch[0].keys()}
     return to_return
 
+def print_section(symbol, title, content, log_file=None, print_to_stdout=True):
+    header = f"{symbol * 25} {title} {symbol * max(0, 80 - len(title) - 26)}\n"
+    block = f"{header}{content}\n\n"
+    
+    if print_to_stdout:
+        print(block)
 
-def run_program(parameters, queues_in_, input_type_, retrying=False):
-    from image_patch import ImagePatch, llm_query, best_image_match, distance, bool_to_yesno
+    if log_file:
+        with open(log_file, 'a') as f:
+            f.write(block)
+
+
+def run_program(dataset_function_parameters, function_body, sample, queues_in_, log_file, timeout = 600):
+    from image_patch import ImagePatch, llm_query, best_image_match, distance, bool_to_yesno, coerce_to_numeric
     from video_segment import VideoSegment
+
+    sample_id = sample['id']
+    import time
+    import os
+    from functools import partial
 
     global queue_results
 
-    code, sample_id, image, possible_answers, query = parameters
+    # SAMPLE HEADER
+    print_section('=', f"SAMPLE ID {sample_id}", "", log_file)
 
-    code_header = f'def execute_command_{sample_id}(' \
-                  f'{input_type_}, possible_answers, query, ' \
-                  f'ImagePatch, VideoSegment, ' \
-                  'llm_query, bool_to_yesno, distance, best_image_match):\n' \
-                  f'    # Answer is\n'
-    code = code_header + code
+    # Build and log code
+    function_header = (
+        f"def execute_command("
+        f"{dataset_function_parameters}, "
+        "ImagePatch, VideoSegment, llm_query, bool_to_yesno, distance, best_image_match, coerce_to_numeric):\n"
+        "    # Answer is\n"
+    )
+    code = function_header + function_body
+    print_section('-', f"PREPARED CODE FOR {sample_id}", code, log_file)
 
-    print("ABOUT TO RUN THE FOLLOWING CODE: ")
-    print(code)
+    # Write code to temp file
+    filename = f"{sample_id}.py"
+    with open(filename, 'w') as f:
+        f.write(code)
 
-    try:
-        print("ABOUT TO COMPILE #", sample_id)
-        exec(compile(code, 'Codex', 'exec'), globals())
-    except Exception as e:
-        print(f'Sample {sample_id} failed at compilation time with error: {e}')
-        result = "error during compilation"
-        return None, code
-        # in the case of compilation error, the authors used a default code that would just return the result of a simple query on the image. I feel this messes up results. if code gen was wrong, code gen was wrong. so be it.
-        # try:
-        #     with open(config.fixed_code_file, 'r') as f:
-        #         fixed_code = f.read()
-        #     code = code_header + fixed_code 
-        #     exec(compile(code, 'Codex', 'exec'), globals())
-        # except Exception as e2:
-        #     print(f'Not even the fixed code worked. Sample {sample_id} failed at compilation time with error: {e2}')
-        #     return None, code
+    x = importlib.import_module(sample_id)
+    time.sleep(5)
 
     queues = [queues_in_, queue_results]
-
     image_patch_partial = partial(ImagePatch, queues=queues)
     video_segment_partial = partial(VideoSegment, queues=queues)
     llm_query_partial = partial(llm_query, queues=queues)
 
+    dataset_function_arguments = {key: sample[key] for key in sample if key not in ("id", "answer")}
+
+    args_dict = {
+        **dataset_function_arguments,
+        "ImagePatch": image_patch_partial,
+        "VideoSegment": video_segment_partial,
+        "llm_query": llm_query_partial,
+        "bool_to_yesno": bool_to_yesno,
+        "distance": distance,
+        "best_image_match": best_image_match,
+        "coerce_to_numeric": coerce_to_numeric
+    }
+
+    import threading
+    import traceback
+    import os
+
     try:
-        import concurrent.futures
+        # EXECUTION + ARGUMENT LOGGING
+        print_section('-', "INVOCATION", f"{filename}.execute_command(**args_dict)", log_file)
+        arg_string = "\n".join(f"{k}: {repr(v)}" for k, v in args_dict.items())
+        print_section('-', "ARGUMENTS ", arg_string, log_file)
 
-        print("ABOUT TO EXEC #", sample_id)  # ✅ print happens first
+        result = None
+        def run_command():
+            nonlocal result
+            result = x.execute_command(**args_dict)
 
-        def run_execute():
-            return globals()[f'execute_command_{sample_id}'](
-                image, possible_answers, query,
-                image_patch_partial, video_segment_partial,
-                llm_query_partial, bool_to_yesno, distance, best_image_match
-            )
+        # Run command in a separate thread
+        thread = threading.Thread(target=run_command)
+        thread.start()
+        thread.join(timeout)
 
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_execute)
-                result = future.result(timeout=1500)  # ⏱ 25 min timeout
-
-            print("EXECUTION OF #", sample_id, " finished. Result is:")
-            print(result)
-
-        except concurrent.futures.TimeoutError:
-            print(f"Sample {sample_id} timed out after 25 minutes.")
-            result = "timeout exceeded"
+        if thread.is_alive():
+            # Timeout occurred
+            thread.join(1)  # Short grace period
+            print_section('!', "TIMEOUT ERROR", f"Sample {sample_id} timed out after {timeout} seconds", log_file)
+            result = f"timeout after {timeout} seconds"
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(tb)
-        print(f"Sample {sample_id} failed DURING EXECUTION with error: {e}. Setting result to 'error during execution'")
-        result = f"ERROR DURING EXECUTION: TRACEBACK[{tb}]"
+        print_section('!', "RUNTIME ERROR", f"Sample {sample_id} failed with error: {e}. \n Traceback: \n {tb}", log_file)
+        result = "error during execution"
+    finally:
+        os.remove(filename)
 
-        # this is a very loopy, weird way the authors had to handle errors by forcing an error (indented block error) with broken code "[". I still don't get it. 
-        # if retrying:
-        #     return None, code
-        # print(f'Sample {sample_id} failed with error: {e}. Next you will see an "expected an indented block" error. ')
-        # # Retry again with fixed code
-        # new_code = "["  # This code will break upon execution, and it will be caught by the except clause
-        # result = run_program((new_code, sample_id, image, possible_answers, query), queues_in_, input_type_,
-        #                      retrying=True)[0]
-
-    # The function run_{sample_id} is defined globally (exec doesn't work locally). A cleaner alternative would be to
-    # save it in a global dict (replace globals() for dict_name in exec), but then it doesn't detect the imported
-    # libraries for some reason. Because defining it globally is not ideal, we just delete it after running it.
-    if f'execute_command_{sample_id}' in globals():
-        del globals()[f'execute_command_{sample_id}']  # If it failed to compile the code, it won't be defined
+    print_section('-', "RESULT", result, log_file)
 
     return result, code
-
 
 def worker_init(queue_results_):
     global queue_results
     index_queue = mp.current_process()._identity[0] % len(queue_results_)
     queue_results = queue_results_[index_queue]
 
-
-def main():
+def config_check_and_init():
     from dotenv import load_dotenv
     load_dotenv()
 
-    mp.set_start_method('spawn')
+    import os
+    import sys
+    from datetime import datetime
+    import pytz
+    import re
 
-    from vision_processes import queues_in, finish_all_consumers, forward, manager
-    from datasets import get_dataset
+    # Check if artifact folder exists
+    if not os.path.isdir(config.artifact_folder):
+        print(f"❌ Error: Artifact folder does not exist: {config.artifact_folder}")
+        sys.exit(1)
 
-    batch_size = config.dataset.batch_size
-    num_processes = min(batch_size, 50)
+    # Validate trial_name (if provided)
+    if config.trial_name is not None:
+        # Ensure it's a valid filename (basic check: alphanum + dash/underscore)
+        if not re.match(r'^[\w\-\.]+$', config.trial_name):
+            print(f"❌ Error: Invalid trial name: {config.trial_name}")
+            sys.exit(1)
 
-    if config.multiprocessing:
-        queue_results_main = manager.Queue()
-        queues_results = [manager.Queue() for _ in range(batch_size)]
+        trial_path = os.path.join(config.artifact_folder, config.trial_name)
+        if os.path.exists(trial_path):
+            print(f"❌ Error: Trial folder already exists: {trial_path}")
+            sys.exit(1)
     else:
-        queue_results_main = None
-        queues_results = [None for _ in range(batch_size)]
+        # No trial name — generate one with PST date-time
+        pst = pytz.timezone('US/Pacific')
+        now = datetime.now(pst)
+        formatted_time = now.strftime('%-m.%-d.%Y.%-I.%M.%S%p')  # e.g. 5.15.2025.11.03AM
+        config.trial_name = formatted_time
+        trial_path = os.path.join(config.artifact_folder, config.trial_name)
 
-    model_name_codex = config.code_gen.model_class
-    code_gen = partial(forward, model_name=model_name_codex, queues=[queues_in, queue_results_main])
+    os.mkdir(trial_path)
+    print(f"✅ Trial folder will be: {trial_path}")
 
-    if config.clear_cache:
-        cache.clear()
+    import shutil
+    save_to = os.path.join(trial_path, os.path.basename(config._metadata_path))
+    shutil.copy2(config._metadata_path, save_to)
+    print(f'saved config to {save_to}')
 
-    if config.wandb:
-        import wandb
-        wandb.init(project="viper", config=OmegaConf.to_container(config))
-        # log the prompt file
-        wandb.save(config.code_gen.prompt)
+    return trial_path
 
-    dataset = get_dataset(config.dataset)
 
-    with open(config.code_gen.prompt) as f:
+def prepare_dataset(dataset_config):
+    from datasets import get_dataset
+    dataset = get_dataset(dataset_config)
+    return dataset
+
+def stage_generation(stage_generation_config, dataloader, out_dir):
+    import inspect
+    import code_gen_models
+    from tqdm import tqdm
+    import os
+    import json
+
+    # Get model
+    code_generation_model_config = stage_generation_config.model
+    code_generation_model = [
+        cls for _, cls in inspect.getmembers(code_gen_models, inspect.isclass)
+        if issubclass(cls, code_gen_models.CodeGenModel) and \
+            cls != code_gen_models.CodeGenModel and \
+            code_generation_model_config.category == cls.name
+    ][0](code_generation_model_config=code_generation_model_config)
+
+    # Load base prompt
+    with open(stage_generation_config.model.base_prompt_path) as f:
         base_prompt = f.read().strip()
 
-    codes_all = None
-    if config.use_cached_codex:
-        results = pd.read_csv(config.cached_codex_path)
-        codes_all = [r.split('# Answer is:')[1] for r in results['code']]
-    # python -c "from joblib import Memory; cache = Memory('cache/', verbose=0); cache.clear()"
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True,
-                            collate_fn=my_collate)
-    input_type = dataset.input_type
+    # Prepare output files
+    txt_out_path = os.path.join(out_dir, "stage_one_generation_log.txt")
+    json_out_path = os.path.join(out_dir, "stage_generation_results.json")
 
+    # Clear existing file
+    with open(txt_out_path, "w") as f_txt:
+        f_txt.write("")
+
+    result = {}
+
+    dataloader = DataLoader(dataset, batch_size=stage_generation_config.model.batch_size, num_workers=0, collate_fn=my_collate)
+    n_batches = len(dataloader)
+    codes_all = []
+    filled_prompts_all = []
+
+    for i, batch in tqdm(enumerate(dataloader), total=n_batches):
+        batch_codes, batch_filled_prompts = code_generation_model.generate(base_prompt, batch)
+
+        codes_all.extend(batch_codes)
+        filled_prompts_all.extend(batch_filled_prompts)
+
+        print_section('|', f"BATCH {i+1} / {n_batches}", "", log_file=txt_out_path, print_to_stdout=False)
+        
+        for i, id in enumerate(batch['id']):
+            code = batch_codes[i]
+            prompt = batch_filled_prompts[i]
+
+            print_section('=', f"SAMPLE ID: {id}", "", log_file=txt_out_path, print_to_stdout=False)
+            print_section('-', f"SAMPLE ID: {id} PROMPT", prompt, log_file=txt_out_path, print_to_stdout=False)
+            print_section('-', f"SAMPLE ID: {id} CODE", code, log_file=txt_out_path, print_to_stdout=False)
+
+            result[id] = {"code": code}
+
+    with open(json_out_path, "w") as f_json:
+        json.dump(result, f_json, indent=2, ensure_ascii=False)
+
+    return result
+
+
+def stage_execution(stage_execution_config, dataset, stage_generation_results, out_dir):
+    from vision_processes import queues_in, finish_all_consumers, manager
+
+    # RUN CODE
+    
     all_results = []
     all_answers = []
-    all_codes = []
-    all_ids = []
-    all_queries = []
-    all_img_paths = []
     all_possible_answers = []
-    all_query_types = []
 
-    all_prompts = []
-    def save_artifacts_code_gen(x):
-        all_prompts.extend(x['prompts'])
-
-    with mp.Pool(processes=num_processes, initializer=worker_init, initargs=(queues_results,)) \
-            if config.multiprocessing else open(os.devnull, "w") as pool:
-        try:
-            n_batches = len(dataloader)
-
-            for i, batch in tqdm(enumerate(dataloader), total=n_batches):
-
-                # Combine all queries and get Codex predictions for them
-                # TODO compute Codex for next batch as current batch is being processed
-
-                if not config.use_cached_codex:
-                    codes = code_gen(prompt=batch['query'], base_prompt=base_prompt, input_type=input_type,
-                                  extra_context=batch['extra_context'], save_artifacts=save_artifacts_code_gen)
-
-                else:
-                    codes = codes_all[i * batch_size:(i + 1) * batch_size]  # If cache
-
-                # Run the code
-                if config.execute_code:
-                    if not config.multiprocessing:
-                        # Otherwise, we would create a new model for every process
-                        results = []
-                        for c, sample_id, img, possible_answers, query in \
-                                zip(codes, batch['sample_id'], batch['image'], batch['possible_answers'], batch['query']):
-                            result = run_program([c, sample_id, img, possible_answers, query], queues_in, input_type)
-                            results.append(result)
-
-                            # DEL IMG HERE
-                            del img
-                    else:
-                        results = list(pool.imap(partial(
-                            run_program, queues_in_=queues_in, input_type_=input_type),
-                            zip(codes, batch['sample_id'], batch['image'], batch['possible_answers'], batch['query'])))
-                else:
-                    results = [(None, c) for c in codes]
-                    warnings.warn("Not executing code! This is only generating the code. We set the flag "
-                                  "'execute_code' to False by default, because executing code generated by a language "
-                                  "model can be dangerous. Set the flag 'execute_code' to True if you want to execute "
-                                  "it.")
-
-                # under memory pressure, gc should kick in automatically but sometimes might not be fast enough.
-
-                all_results += [r[0] for r in results]
-                all_codes += [r[1] for r in results]
-                all_ids += batch['sample_id']
-                all_answers += batch['answer']
-                all_possible_answers += batch['possible_answers']
-                all_query_types += batch['query_type']
-                all_queries += batch['query']
-                all_img_paths += [dataset.get_sample_path(idx) for idx in batch['index']]
-
-                # all_prompts collected too
-
-                # console.print(f"Batch {i} all_results:", all_results)
-                # console.print(f"Batch {i} all_codes:", all_codes)
-                # console.print(f"Batch {i} all_ids:", all_ids)
-                # console.print(f"Batch {i} all_answers:", all_answers)
-                # console.print(f"Batch {i} all_possible_answers:", all_possible_answers)
-                # console.print(f"Batch {i} all_queries:", all_queries)
-                # console.print(f"Batch {i} all_query_types:", all_query_types)
-                # console.print(f"Batch {i} all_img_paths:", all_img_paths)
-                # console.print("all code execution finished. going to accuracy.")
-                if config.logfile:
-                    with open(config.logfile, "a") as f:
-                        print(f"BATCH {i} -------------------------------------------------------------")
-                        print(f"Batch {i} results:", [r[0] for r in results], file=f)
-                        print(f"Batch {i} codes:", file=f)
-                        for j, code in enumerate([r[1] for r in results]):
-                            print(f"--- Batch {i}, Code {j} ---", file=f)
-                            print(code, file=f)
-                        print(f"Batch {i} ids:", batch['sample_id'], file=f)
-                        print(f"Batch {i} answers:", batch['answer'], file=f)
-                        print(f"Batch {i} possible_answers:", batch['possible_answers'], file=f)
-                        print(f"Batch {i} queries:", batch['query'], file=f)
-                        print(f"Batch {i} query_types:", batch['query_type'], file=f)
-                        print(f"Batch {i} img_paths:", [dataset.get_sample_path(idx) for idx in batch['index']], file=f)
-                        print("Batch code execution finished.", file=f)
-
-
-                if i % config.log_every == 0:
-                    try:
-                        batch_accuracy = dataset.accuracy(
-                            [r[0] for r in results],
-                            batch['answer'],
-                            batch['possible_answers'],
-                            batch['query_type']
-                        )
-                        with open(config.logfile, "a") as f:
-                            print(f'Accuracy at Batch {i}/{n_batches}: {batch_accuracy}')
-                    except Exception as e:
-                        console.print(f'Error computing accuracy: {e}') 
-
-        except Exception as e:
-            # print full stack trace
-            traceback.print_exc()
-            console.print(f'Exception: {e}')
-            console.print("Completing logging and exiting...")
-
-        
-
-    try:
-        accuracy = dataset.accuracy(all_results, all_answers, all_possible_answers, all_query_types)
-        console.print(f'Final accuracy: {accuracy}')
-    except Exception as e:
-        accuracy = 0
-        print(f'Error computing accuracy: {e}')
-
-    if config.save:
-        results_dir = pathlib.Path(config['results_dir'])
-        results_dir.mkdir(parents=True, exist_ok=True)
-
-        if not config.save_new_results:
-            filename = 'results.json'
-        else:
-            existing_files = list(results_dir.glob('results_*.json'))
-            if len(existing_files) == 0:
-                filename = 'results_0.json'
-            else:
-                filename = 'results_' + str(
-                    max([int(ef.stem.split('_')[-1]) for ef in existing_files if ef.stem.split('_')[-1].isdigit()]) + 1
-                ) + '.json'
-
-        print('Saving results to', filename)
-
-        # zip the data into dicts per sample
-        results_data = []
-        total_compilation_errors = 0
-        total_execution_errors = 0
-
-        import textwrap
-
-        for rid, path, query, result, answer, poss_ans, code, prompt in zip(
-            all_ids, all_img_paths, all_queries, all_results, all_answers, all_possible_answers, all_codes, all_prompts
-        ):
-            result_str = str(result).lower()
-            if "error during compilation" in result_str:
-                total_compilation_errors += 1
-            if "error during execution" in result_str:
-                total_execution_errors += 1
-
-            results_data.append({
-                "id": rid,
-                "img_path": path,
-                "query": query,
-                "result": result,
-                "answer": answer,
-                "possible_answers": poss_ans,
-                "code": code,
-                "artifacts": {
-                    "full_prompt": prompt 
-                }
-            })
-
-        total_examples = len(results_data)
-
-        output = {
-            "overall_accuracy": accuracy,
-            "total_examples": total_examples,
-            "total_error_during_compilation": total_compilation_errors,
-            "total_error_during_execution": total_execution_errors,
-            "data": results_data
-        }
-
-        with open(results_dir / filename, 'w', encoding='utf-8') as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
+    log_file_path = os.path.join(out_dir, "stage_two_execution_log.txt")
+    full_results_json_path = os.path.join(out_dir, "stage_execution_results.json")
+    result = {}
+    dataloader = DataLoader(dataset, batch_size=1, num_workers=0, collate_fn=my_collate)
     
-    # if config.save:
-    #     results_dir = pathlib.Path(config['results_dir'])
-    #     results_dir = results_dir / config.dataset.split
-    #     results_dir.mkdir(parents=True, exist_ok=True)
-    #     if not config.save_new_results:
-    #         filename = 'results.csv'
-    #     else:
-    #         existing_files = list(results_dir.glob('results_*.csv'))
-    #         if len(existing_files) == 0:
-    #             filename = 'results_0.csv'
-    #         else:
-    #             filename = 'results_' + str(max([int(ef.stem.split('_')[-1]) for ef in existing_files if
-    #                                              str.isnumeric(ef.stem.split('_')[-1])]) + 1) + '.csv'
-    #     print('Saving results to', filename)
-    #     df = pd.DataFrame([all_results, all_answers, all_codes, all_ids, all_queries, all_img_paths,
-    #                        all_possible_answers]).T
-    #     df.columns = ['result', 'answer', 'code', 'id', 'query', 'img_path', 'possible_answers']
-    #     # make the result column a string
-    #     df['result'] = df['result'].apply(str)
-    #     df.to_csv(results_dir / filename, header=True, index=False, encoding='utf-8')
-    #     # torch.save([all_results, all_answers, all_codes, all_ids, all_queries, all_img_paths], results_dir/filename)
+    for i, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
+        sample = {key: batch[key][0] for key in batch}
 
-        # if config.wandb:
-        #     wandb.log({'accuracy': accuracy})
-        #     wandb.log({'results': wandb.Table(dataframe=df, allow_mixed_types=True)})
+        if not stage_execution_config.multiprocessing:
+            code = stage_generation_results[sample['id']]['code']
+            
+            code_return, code = run_program(dataset_function_parameters=config.dataset.stage_execution.function_parameters,
+                        function_body=code,
+                        sample=sample,
+                        timeout=stage_execution_config.timeout_s,
+                        queues_in_ = queues_in,
+                        log_file=log_file_path)
+            
+            result[sample['id']] = {
+                "code": code,
+                "code_return": code_return,
+            }
+
+            all_results.append(code_return)
+            all_answers.append(sample['answer'])
+            
+    with open(full_results_json_path, "w") as f_json:
+        json.dump(result, f_json, indent=2, ensure_ascii=False)
+
+    # EVALUATION
+
+    eval_json_path = os.path.join(out_dir, "stage_execution_evaluation.json")
+
+    accuracy = dataset.accuracy(all_results, all_answers)
+    print(f'Final accuracy: {accuracy}')
+
+    total_examples = len(dataloader)
+    total_execution_errors = 0
+
+    for code_return in all_results:
+        normal_code_return = str(code_return).lower()
+        if "error during execution" in normal_code_return:
+            total_execution_errors += 1
+
+    evaluation = {
+        "overall_accuracy": accuracy,
+        "total_examples": total_examples,
+        "total_error_during_execution": total_execution_errors,
+        "data": result
+    }
+
+    with open(eval_json_path, "w") as f_json:
+        json.dump(evaluation, f_json, indent=2, ensure_ascii=False)
 
     finish_all_consumers()
 
+def deserialize_stage_generation_results(path):
+    import json
+    with open(path, 'r') as f:
+        return json.load(f)
+
+from context import context
+
 
 if __name__ == '__main__':
-    main()
+    trial_path = config_check_and_init()
+    
+    context.set_stage(1)
+    dataset = prepare_dataset(config.dataset)
+
+    if config.stage_generation.enabled:
+        stage_generation_results = stage_generation(config.stage_generation, dataset, trial_path)
+        if config.stage_execution.enabled:
+            context.set_stage(2)
+            stage_execution(config.stage_execution, dataset, stage_generation_results, trial_path)
+    elif config.stage_execution.enabled:
+        stage_generation_results = deserialize_stage_generation_results(config.stage_execution.stage_generation_results_path)
+        context.set_stage(2)
+        stage_execution(config.stage_execution, dataset, stage_generation_results, trial_path)

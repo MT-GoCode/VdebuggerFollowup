@@ -1,6 +1,5 @@
 import math
 
-
 class ImagePatch:
     """A Python class containing a crop of an image centered around a particular object, as well as relevant information.
     Attributes
@@ -17,6 +16,8 @@ class ImagePatch:
         image matching the object_name.
     exists(object_name: str)->bool
         Returns True if the object specified by object_name is found in the image, and False otherwise.
+    verify_property(property: str)->bool
+        Returns True if the property is met, and False otherwise.
     best_text_match(option_list: List[str], prefix: str)->str
         Returns the string that best matches the image.
     simple_query(question: str=None)->str
@@ -96,6 +97,27 @@ class ImagePatch:
         >>>     return bool_to_yesno(is_foo and is_garply_bar)
         """
         return len(self.find(object_name)) > 0
+
+    def verify_property(self, object_name: str, visual_property: str) -> bool:
+        """Returns True if the object possesses the visual property, and False otherwise.
+        Differs from 'exists' in that it presupposes the existence of the object specified by object_name, instead checking whether the object possesses the property.
+        Parameters
+        -------
+        object_name : str
+            A string describing the name of the object to be found in the image.
+        visual_property : str
+            A string describing the simple visual property (e.g., color, shape, material) to be checked.
+
+        Examples
+        -------
+        >>> # Do the letters have blue color?
+        >>> def execute_command(image) -> str:
+        >>>     image_patch = ImagePatch(image)
+        >>>     letters_patches = image_patch.find("letters")
+        >>>     # Question assumes only one letter patch
+        >>>     return bool_to_yesno(letters_patches[0].verify_property("letters", "blue"))
+        """
+        return verify_property(self.cropped_image, object_name, property)
 
     def best_text_match(self, option_list: List[str], prefix: str=None) -> str:
         """Returns the string that best matches the image.
@@ -579,19 +601,36 @@ def execute_command(video, possible_answers, query)->[str, dict]:
     answer = video_segment.select_answer(info, query, possible_answers)
     return answer
 
-# INSERT_QUERY_HERE
-# possible answers: EXTRA_CONTEXT_HERE
-def execute_command(INSERT_TYPE_HERE):
+Here is your task:
 
-Please answer with a fully-complete and functional execute_command function with signature as "def execute_command(video, possible_answers, query)->[str, dict]"
+# $query$
+# possible answers: $possible_answers$
+# The video is $duration_s$ seconds long and has $resulting_frame_cnt$ frames sampled evenly. 
+def execute_command(video, possible_answers, query)->[str, dict]:
+
+Please answer with a fully-complete and functional execute_command function with the same signature.
 
 This function must return the correct answer by the end. There must be a return statement!
 
-Please return nothing more than the answer as a string. Nothing more, nothing less. Do not return any other extraneous information about the video, the other answers, how you got your answer, etc. Only the answer. The last line should literally be "return answer", where answer is a string.
+Please return nothing more than the answer. Nothing more, nothing less. Do not return any other extraneous information about the video, the other answers, how you got your answer, etc. Only the answer.
+
+The answer MUST come from the possible_answers array. Please make sure you are selecting an answer from here, instead of generating your own. The last line should literally be "return answer", where answer is an element of possible_answers
 
 Do not provide any other text or output other than this function.
 
 You are allowed to use imports, but please place them within the function, and only import from built-in libraries. Do not use any non-built-in libraries.
+
+As seen in the examples, please intelligently use VideoSegment to look at only relevant sections of the video, making a guess based on what the prompt asks for and how many frames there are. For example, if there are X frames and the prompt refers to the beginning, use VideoSegment(video, Y, Z) to focus on the subrange Y to Z, which are proportional to X. Maybe Y is 0 and Z is one-fifth of X, if the prompt refers to the beginning. Perhaps, if the prompt refers to the middle of the video, then Y is 1/3 of X and Z is 2/3.
+
+If there is no indication of where in the video to focus on, it is best you create a video segment for the entire video, with just VideoSegment(video) and scan through to find the area of interest.
+
+You can also create different VideoSegment's through your code for different logical steps. Beginning, middle, end, after_event_x, before_event_y, etc.
+
+Because the frames are sampled evenly from the duration, do not make any assumptions about the framerate. Be very careful not to select the same frame as the start and end to VideoSegment -- check this before initializing a VideoSegment.
+
+Please use comments in the code to explain your reasoning. 
+
+Have no print statements.
 
 Please enclose your code at the start and end in a code block. 
 ```python
@@ -600,3 +639,7 @@ def execute...
     return XYZ
 ``` 
 the opening backticks must be on one line before the define statement, and the closing backticks on one line after the return statement.
+
+When writing your function, make use of as many relevant APIs as possible. However, only include APIs that contribute meaningfully to solving the task — do not use unnecessary or unrelated ones. As a recap, the APIs provided to you are: llm_query, ImagePatch.find, ImagePatch.exists, ImagePatch.simple_query, ImagePatch.crop, ImagePatch.verify_property, ImagePatch.best_text_match, VideoSegment.frame_from_index, VideoSegment.trim, VideoSegment.select_answer, VideoSegment.frame_iterator, best_image_match, distance, bool_to_yesno, coerce_to_numeric.
+
+Do not confuse member functions with non-member functions.

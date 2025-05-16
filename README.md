@@ -23,20 +23,21 @@ cd VdebuggerFollowup
 conda create -n viper-main python=3.10 -y
 conda activate viper-main
 # Install the torch wheels that are most compatible with the underlying architecture. We had 1080 Ti's, despite 12.8 driver installed, 11.8 wheels is the right one to install.
-# Remember to change 5 parts of this command! torch version, torch wheels, torchvision version, torchvision wheels, index url
-# Here are some that work:
-# pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
-# pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+# Here are some that work, from the official website:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 pip install numpy
 pip install accelerate backoff bitsandbytes cityscapesscripts decord dill einops ftfy h5py inflect ipython ipykernel jupyter joblib kornia matplotlib nltk num2words omegaconf openai opencv_python_headless pandas Pillow prettytable pycocotools python_dateutil PyYAML qd regex requests rich scipy setuptools tensorboardX tensorflow timm tqdm wandb word2number yacs gdown spacy pywsd dotenv
-pip install vllm==0.8.4 # This is important! The package maintainers are updating fast and official version 0.8.5 is bronke :(
 pip install git+https://github.com/openai/CLIP.git
+
+pip install vllm==0.8.4 # It is important to use this version! The package maintainers are updating fast and official version 0.8.5 is broken.
+# Please follow https://docs.vllm.ai/en/stable/getting_started/installation/gpu.html for a guide on how to install VLLM. Depending on which wheels you chose to setup viper-main, you should install VLLM compiled with the same wheels. 
+# FYI, this will install & force transformers = 4.51.3 and tokenizers == 0.21.0
+# Apparently VLLM messes with conda somehow... best not to do any more installation after this point.
 
 chmod +x download_models.sh # needs gdown
 ./download_models.sh
-
-pip install transformers==4.51.3 tokenizers==0.21.0 # make sure these two have compatible versions with one another. This will mess up BLIP2 if not done properly
 
 # Building GLIP
 conda deactivate 
@@ -58,9 +59,7 @@ python setup.py build develop --user
 
 conda deactivate 
 
-# Not critical, just to get some imports to run
 conda activate viper-main
-python -m spacy download en_core_web_lg
 
 ```
 ```

@@ -23,6 +23,8 @@ from utils import seed_everything
 import datasets
 import json
 
+import uuid
+
 # See https://github.com/pytorch/pytorch/issues/11201, https://github.com/pytorch/pytorch/issues/973
 # Not for dataloader, but for multiprocessing batches
 mp.set_sharing_strategy('file_system')
@@ -78,11 +80,12 @@ def run_program(dataset_function_parameters, function_body, sample, queues_in_, 
     print_section('-', f"PREPARED CODE FOR {sample_id}", code, log_file)
 
     # Write code to temp file
-    filename = f"{sample_id}.py"
+    modulename = f"{sample_id}_{str(uuid.uuid4())}"
+    filename = f"{modulename}.py"
     with open(filename, 'w') as f:
         f.write(code)
 
-    x = importlib.import_module(sample_id)
+    x = importlib.import_module(modulename)
     time.sleep(5)
 
     queues = [queues_in_, queue_results]
@@ -261,7 +264,6 @@ def stage_execution(stage_execution_config, dataset, stage_generation_results, o
     
     all_results = []
     all_answers = []
-    all_possible_answers = []
 
     log_file_path = os.path.join(out_dir, "stage_two_execution_log.txt")
     full_results_json_path = os.path.join(out_dir, "stage_execution_results.json")

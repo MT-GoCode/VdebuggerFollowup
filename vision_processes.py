@@ -108,7 +108,7 @@ if stage_execution_config.multiprocessing:
 
         else:
             def _function(queue_in):
-                fn = make_fn(model_class, process_name, counter)
+                fn = make_fn(model_class, process_name, counter, multiprocessing=True)
                 while True:
                     received = queue_in.get()
                     if received is None:
@@ -168,7 +168,7 @@ else:
             model_instance = model_class_(gpu_number=gpu_number)
         
         for process_name_ in model_class_.list_processes():
-            consumers[process_name_] = make_fn(model_instance, process_name_, stage_execution_config.multiprocessing)
+            consumers[process_name_] = make_fn(model_instance, process_name_, multiprocessing=False)
 
     queues_in = None
 

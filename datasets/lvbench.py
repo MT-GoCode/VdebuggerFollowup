@@ -171,8 +171,6 @@ class LVBenchDataset(Dataset):
 
     def accuracy(self, prediction, ground_truth):
         assert len(prediction) == len(ground_truth)
-        score = 0
-
         score = sum(1 for p, g in zip(prediction, ground_truth) if p == g)
         return score / len(prediction)
     

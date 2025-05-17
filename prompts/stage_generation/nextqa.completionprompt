@@ -1,5 +1,16 @@
 import math
 
+def llm_query(question: str, long_answer: bool)->str:
+    '''Answers a question, likely about knowledge external to the video or knowledge not known at time of writing code. 
+    
+    Parameters
+    ----------
+    question: str
+        the text question to ask, in the form of a normal English question. Must not contain any reference to 'the image' or 'the photo', etc.
+    long_answer: bool
+        if True, the answer will be a few sentences long. if False, the answer will likely be very short, just a few words. Post-process the results accordingly.
+    '''
+    return llm_query(question)
 
 class ImagePatch:
     """A Python class containing a crop of an image centered around a particular object, as well as relevant information.
@@ -99,6 +110,27 @@ class ImagePatch:
         """
         return len(self.find(object_name)) > 0
 
+    def verify_property(self, object_name: str, visual_property: str) -> bool:
+        """Returns True if the object possesses the visual property, and False otherwise.
+        Differs from 'exists' in that it presupposes the existence of the object specified by object_name, instead checking whether the object possesses the property.
+        Parameters
+        -------
+        object_name : str
+            A string describing the name of the object to be found in the image.
+        visual_property : str
+            A string describing the simple visual property (e.g., color, shape, material) to be checked.
+
+        Examples
+        -------
+        >>> # Do the letters have blue color?
+        >>> def execute_command(image) -> str:
+        >>>     image_patch = ImagePatch(image)
+        >>>     letters_patches = image_patch.find("letters")
+        >>>     # Question assumes only one letter patch
+        >>>     return bool_to_yesno(letters_patches[0].verify_property("letters", "blue"))
+        """
+        return verify_property(self.cropped_image, object_name, property)
+
     def best_text_match(self, option_list: List[str], prefix: str=None) -> str:
         """Returns the string that best matches the image.
         Parameters
@@ -185,26 +217,6 @@ class ImagePatch:
         """
         return self.left <= right and self.right >= left and self.lower <= upper and self.upper >= lower
 
-    def verify_property(self, object_name: str, visual_property: str) -> bool:
-        """Returns True if the object possesses the visual property, and False otherwise.
-        Differs from 'exists' in that it presupposes the existence of the object specified by object_name, instead checking whether the object possesses the property.
-        Parameters
-        -------
-        object_name : str
-            A string describing the name of the object to be found in the image.
-        visual_property : str
-            A string describing the simple visual property (e.g., color, shape, material) to be checked.
-
-        Examples
-        -------
-        >>> # Do the letters have blue color?
-        >>> def execute_command(image) -> str:
-        >>>     image_patch = ImagePatch(image)
-        >>>     letters_patches = image_patch.find("letters")
-        >>>     # Question assumes only one letter patch
-        >>>     return bool_to_yesno(letters_patches[0].verify_property("letters", "blue"))
-        """
-        return verify_property(self.cropped_image, object_name, property)
 
 def best_image_match(list_patches: List[ImagePatch], content: List[str], return_index=False) -> Union[ImagePatch, int]:
     """Returns the patch most likely to contain the content.
@@ -604,6 +616,15 @@ def execute_command(video, possible_answers, query)->[str, dict]:
 # You are allowed to use imports, but please place them within the function, and only import from built-in libraries. Do not use any non-built-in libraries.
 # This function must return the correct answer by the end. There must be a return statement!
 
+# When writing your function, make use of as many relevant APIs as possible. However, only include APIs that contribute meaningfully to solving the task — do not use unnecessary or unrelated ones. As a recap, the APIs provided to you are: llm_query, ImagePatch.find, ImagePatch.exists, ImagePatch.simple_query, ImagePatch.crop, ImagePatch.verify_property, VideoSegment.frame_from_index, VideoSegment.trim, VideoSegment.select_answer, VideoSegment.frame_iterator, best_image_match, distance, bool_to_yesno, coerce_to_numeric.
+
+# This function must return the correct answer by the end. There must be a return statement!
+
+# Please return nothing more than the answer. Nothing more, nothing less. Do not return any other extraneous information about the video, the other answers, how you got your answer, etc. Only the answer.
+
+# The answer MUST come from the possible_answers array. Please make sure you are selecting an answer from here, instead of generating your own. The last line should literally be "return answer", where answer is an element of possible_answers
+
 # $query$
 # possible answers: $extra_context$
-def execute_command(video):
+def execute_command(video, possible_answers, query)->[str, dict]:
+

@@ -19,7 +19,6 @@ class CodeGenModel(ABC):
                 placeholder = f"${key}$"
                 prompt = prompt.replace(placeholder, batch[key][i])
             batch_filled_prompts.append(prompt)
-        
         result = self._generate(batch_filled_prompts)
         return result, batch_filled_prompts
     
@@ -126,8 +125,9 @@ class VLLMCategory(CodeGenModel):
             stop=["\n\n"],
         )
 
-    def general_complete(self, prompt):
-        outputs = self.llm.generate(prompt, self.sampling_params, use_tqdm=True)
+    def general_complete(self, batch_prompts):
+        outputs = self.llm.generate(batch_prompts, self.sampling_params, use_tqdm=True)
+        # tqdm will show len(batch) steps even for a single batch — it's per generation, not per forward.
         generated_text = [[o.text for o in output.outputs] for output in outputs]
         generated_text = [[text.split('\n\n')[0] for text in texts] for texts in generated_text]
 

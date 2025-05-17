@@ -15,6 +15,7 @@ mkdir datasets
 # if the architecture-driver mismatch (ex. driver is a bit ahead of the time when architecture came out), some work will need to be done. Here's what has worked:
 # On a machine with 1080Ti's and CUDA 12.8 driver, the 12.8 driver was far ahead of the 1080Ti. So I used torch with (1) 12.8 wheels for glip-compile environment and (2) 11.8 wheels for the viper-main environment. Somehow, at time of running, these two environments were compatible. 
 # On a machine with A6000s and CUDA 12.8 / 12.6 driver, used torch with 12.8 / 12.6 wheels for viper-main environment and torch with 12.8 / 12.6 wheels for glip-compile environment. In a situation like this, the viper-main environment CAN BE REUSED FOR GLIP COMPILATION--do not create a new conda glip-compile env in this case.
+# Note that if you are just doing code execution, you can use a computer with smaller GPUs. And if you have many, you can load one model on each, then multiprocess the hell out of it. bottleneck is in the generation.
 
 # Initial repository setup
 git clone https://github.com/MT-GoCode/VdebuggerFollowup.git
@@ -35,6 +36,7 @@ pip install vllm==0.8.4 # It is important to use this version! The package maint
 # Please follow https://docs.vllm.ai/en/stable/getting_started/installation/gpu.html for a guide on how to install VLLM. Depending on which wheels you chose to setup viper-main, you should install VLLM compiled with the same wheels. 
 # FYI, this will install & force transformers = 4.51.3 and tokenizers == 0.21.0
 # Apparently VLLM messes with conda somehow... best not to do any more installation after this point.
+# VERY WEIRDLY ENOUGH, running VLLM in tmux, despite using the same conda envs, can break it.
 
 chmod +x download_models.sh # needs gdown
 ./download_models.sh

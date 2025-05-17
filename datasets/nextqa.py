@@ -73,7 +73,7 @@ class NExTQADataset():
             print(f'Subset requested. Only selecting from {start_sample} to {end}')
             # self.sample_list = self.sample_list.sample(n=max_samples)
             self.sample_list = self.sample_list[start_sample:end]
-            print(self.sample_list)
+        print(self.sample_list)
 
 
         self.sample_ids = self.sample_list.index

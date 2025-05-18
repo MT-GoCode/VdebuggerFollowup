@@ -66,7 +66,7 @@ def run_program(dataset_function_parameters, timeout, log_to_stdout, function_bo
     function_body, sample = function_body_sample
 
     sample_id = sample['id']
-    auxilary_string = sample.get('auxiliary_string', None)
+    auxiliary_string = sample.get('auxiliary_string', None)
 
     
     import time
@@ -94,7 +94,7 @@ def run_program(dataset_function_parameters, timeout, log_to_stdout, function_bo
     x = importlib.import_module(modulename)
     time.sleep(5)
 
-    dataset_function_arguments = {key: sample[key] for key in sample if key not in ("id", "auxilary_string")}
+    dataset_function_arguments = {key: sample[key] for key in sample if key not in ("id", "auxiliary_string")}
 
     try:
         # for multiprocessing
@@ -140,9 +140,9 @@ def run_program(dataset_function_parameters, timeout, log_to_stdout, function_bo
 
     try:
         # EXECUTION + ARGUMENT LOGGING
-        print_section('-', f"INVOCATION FOR SAMPLE ID: {sample_id}", f"{filename}.execute_command(**args_dict)", worker_log_path, log_to_stdout)
+        print_section('-', f"SAMPLE ID: {sample_id} INVOCATION", f"{filename}.execute_command(**args_dict)", worker_log_path, log_to_stdout)
         arg_string = "\n".join(f"{k}: {repr(v)}" for k, v in args_dict.items())
-        print_section('-', f"ARGUMENTS FOR SAMPLE ID: {sample_id}", arg_string, worker_log_path, log_to_stdout)
+        print_section('-', f"SAMPLE ID: {sample_id} ARGUMENTS", arg_string, worker_log_path, log_to_stdout)
 
         # Run command in a separate thread with timeout
         thread = threading.Thread(target=run_command)
@@ -165,9 +165,9 @@ def run_program(dataset_function_parameters, timeout, log_to_stdout, function_bo
     finally:
         os.remove(filename)
 
-    print_section('-', f"RESULT FOR SAMPLE ID: {sample_id}", result, worker_log_path, log_to_stdout)
+    print_section('-', f"SAMPLE ID: {sample_id} RESULT", result, worker_log_path, log_to_stdout)
 
-    print_section('-', f"AUXILARY INFO FOR SAMPLE ID: {sample_id}", auxilary_string, worker_log_path, log_to_stdout)
+    print_section('-', f"SAMPLE ID: {sample_id} AUXILIARY INFO", auxiliary_string, worker_log_path, log_to_stdout)
 
     return result, code
 
@@ -316,34 +316,8 @@ def stage_execution(stage_execution_config, dataset, stage_generation_results, o
             
     with open(full_results_json_path, "w") as f_json:
         json.dump(result, f_json, indent=2, ensure_ascii=False, default=str) # the default is important, for non-serializable types, to just try to force to string.
-    
-    # EVALUATION
 
-    eval_json_path = os.path.join(out_dir, "stage_execution_evaluation.json")
-
-    context.stage = 3
-    all_answers = [_['answer'] for _ in dataset]
-
-    accuracy = dataset.accuracy(all_results, all_answers)
-    print(f'Final accuracy: {accuracy}')
-
-    total_examples = len(dataloader)
-    total_execution_errors = 0
-
-    for code_return in all_results:
-        normal_code_return = str(code_return).lower()
-        if "error during execution" in normal_code_return:
-            total_execution_errors += 1
-
-    evaluation = {
-        "overall_accuracy": accuracy,
-        "total_examples": total_examples,
-        "total_error_during_execution": total_execution_errors,
-        "data": result
-    }
-
-    with open(eval_json_path, "w") as f_json:
-        json.dump(evaluation, f_json, indent=2, ensure_ascii=False)
+    return result
 
 def worker_init(model_processes_input_queues_, n_workers, worker_reusable_output_queues, out_dir):  
     # Use modulo to map process identity to valid worker index - very important! we already have other processes.
@@ -406,9 +380,7 @@ def stage_execution_multiprocessing(stage_execution_config, dataset, stage_gener
     import pdb; pdb.set_trace()
 
     result = {}
-    all_results = []
     for sample_id, (code_return, code) in zip(all_sample_ids, results): 
-        all_results.append(code_return)
         result[sample_id] = {
             "code": code,
             "code_return": code_return,
@@ -418,21 +390,27 @@ def stage_execution_multiprocessing(stage_execution_config, dataset, stage_gener
     with open(full_results_json_path, "w") as f_json:
         json.dump(result, f_json, indent=2, ensure_ascii=False, default=str)
 
+    return result
     
-    # EVALUATION
+def stage_evaluation(stage_evaluation_config, dataset, stage_execution_results, out_dir):
 
     eval_json_path = os.path.join(out_dir, "stage_execution_evaluation.json")
 
-    context.stage = 3
-    all_answers = [_['answer'] for _ in dataset]
+    all_answers = []
+    all_code_returns = []
 
-    accuracy = dataset.accuracy(all_results, all_answers)
+    for _, stage_execution_sample_result in stage_execution_results.items():
+        all_code_returns.append(stage_execution_sample_result['code_return'])
+
+    all_answers = [sample['answer'] for sample in dataset]
+
+    accuracy = dataset.accuracy(all_code_returns, all_answers)
     print(f'Final accuracy: {accuracy}')
 
-    total_examples = len(all_results)
+    total_examples = len(all_answers)
     total_execution_errors = 0
 
-    for code_return in all_results:
+    for code_return in all_code_returns:
         normal_code_return = str(code_return).lower()
         if "error during execution" in normal_code_return:
             total_execution_errors += 1
@@ -440,8 +418,7 @@ def stage_execution_multiprocessing(stage_execution_config, dataset, stage_gener
     evaluation = {
         "overall_accuracy": accuracy,
         "total_examples": total_examples,
-        "total_error_during_execution": total_execution_errors,
-        "data": result
+        "total_error_during_execution": total_execution_errors
     }
 
     with open(eval_json_path, "w") as f_json:
@@ -452,30 +429,48 @@ def deserialize_stage_generation_results(path):
     import json
     with open(path, 'r') as f:
         return json.load(f)
+    
+# different but duplicate function in case you wanted to change in the future
+def deserialize_stage_execution_results(path):
+    import json
+    with open(path, 'r') as f:
+        return json.load(f)
 
 from context import context 
 
 if __name__ == '__main__':
     trial_path = config_check_and_init()
     
-    context.stage = 1
     dataset = prepare_dataset(config.dataset)
 
     stage_generation_results = None
 
     if config.stage_generation.enabled:
+        context.stage = 'generation'
         stage_generation_results = stage_generation(config.stage_generation, dataset, trial_path)
     
+    stage_execution_results = None
+
     if config.stage_execution.enabled:
         if stage_generation_results is None: 
             stage_generation_results = deserialize_stage_generation_results(config.stage_execution.stage_generation_results_path)
 
+        context.stage = 'execution'
         if not config.stage_execution.multiprocessing.use:
-            context.stage = 2
-            stage_execution(config.stage_execution, dataset, stage_generation_results, trial_path)
+            stage_execution_results = stage_execution(config.stage_execution, dataset, stage_generation_results, trial_path)
         else:
-            context.stage = 2
-            stage_execution_multiprocessing(config.stage_execution, dataset, stage_generation_results, trial_path)
+            stage_execution_results = stage_execution_multiprocessing(config.stage_execution, dataset, stage_generation_results, trial_path)
+
+    if config.stage_evaluation.enabled:
+        if stage_execution_results is None: 
+            if config.stage_generation.enabled:
+                print("skipping evaluation because it seems generation was done, then execution was skipped. You may have an execution json in config.stage_evaluation.stage_execution_results_path but there isn't much point to this.")
+                exit(1)
+
+            stage_execution_results = deserialize_stage_execution_results(config.stage_evaluation.stage_execution_results_path)
+
+        context.stage = 'evaluation'
+        stage_evaluation(config.stage_evaluation, dataset, stage_execution_results, trial_path)
 
     # remember child processes will always re-import everything even if they start elsewhere. so we need to make sure certain things only happen in main thread
     # key idea: we want to create mp queues and shared data structures in main, put only pickleable items in there, and create vanilla encompassing datastructures that contain references to these structures for bookeeping -- but keep that only in main. through reimports, spawned child processes should not accidentally recreate these.

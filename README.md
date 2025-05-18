@@ -114,7 +114,7 @@ wget https://huggingface.co/datasets/THUDM/LVBench/resolve/main/video_info.meta.
 
 mkdir csvs
 
-# copy and paste lvbenchcsv_generator.py here
+# copy and paste helper_scripts/lvbenchcsv_generator.py here
 
 python lvbenchcsv_generator.py
 ```

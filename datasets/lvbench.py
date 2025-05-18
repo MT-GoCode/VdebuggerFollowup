@@ -12,7 +12,7 @@ import numpy as np
 
 import numpy as np
 
-from VdebuggerFollowup.context import context
+from context import context
 
 CACHE_DIR = "./video_tensor_iteration_cache"  # Directory to store cached video tensors
 import torch
@@ -96,10 +96,10 @@ class LVBenchDataset(Dataset):
     def __init__(self, **kwargs):
 
         self.video_path = kwargs['video_path']
-        self.list_path = kwargs['list_path']
-        self.sample_fps = kwargs['sample_fps']
-        self.max_num_frames = kwargs['max_num_frames']
+        self.video_path = os.path.expandvars(self.video_path)
+        self.video_path = os.path.expanduser(self.video_path)
 
+        self.list_path = kwargs['list_path']
         self.list_path = os.path.expandvars(self.list_path)
         self.list_path = os.path.expanduser(self.list_path)
         self.sample_list = pd.read_csv(self.list_path, dtype = str)
@@ -115,8 +115,9 @@ class LVBenchDataset(Dataset):
         print(self.sample_list)
 
         self.sample_ids = self.sample_list.index
-        self.video_path = os.path.expandvars(self.video_path)
-        self.video_path = os.path.expanduser(self.video_path)
+
+        self.sample_fps = kwargs['stage_execution']['sample_fps']
+        self.max_num_frames = kwargs['stage_execution']['max_num_frames']
 
     def get_sample_path(self, index):
         sample_id = self.sample_ids[index]
@@ -137,7 +138,7 @@ class LVBenchDataset(Dataset):
         fps = int(round(float(cur_sample['fps'])))
         resulting_frame_cnt = min(self.max_num_frames, int(duration_s * fps))
 
-        if context.get_stage() == 1:
+        if context.stage == 'generation':
             out_dict = {
                 "id": str(sample_id),
                 
@@ -146,7 +147,7 @@ class LVBenchDataset(Dataset):
                 "duration_s": str(duration_s),
                 "resulting_frame_cnt": str(resulting_frame_cnt)
             }
-        elif context.get_stage() == 2:
+        elif context.stage == 'execution':
             video_name = str(cur_sample['video'])
             video_path = os.path.join(self.video_path, video_name + '.mp4')
             video = tensorize_video(video_path, total_frames = resulting_frame_cnt)
@@ -161,6 +162,15 @@ class LVBenchDataset(Dataset):
                 
                 "answer": answer
             }
+        elif context.stage == 'evaluation':
+            out_dict = {
+                "id": str(sample_id),
+
+                "query": question,
+                "possible_answers": possible_answers,
+                
+                "answer": answer
+            }
 
         return out_dict
 
@@ -169,6 +179,7 @@ class LVBenchDataset(Dataset):
 
     def accuracy(self, prediction, ground_truth):
         assert len(prediction) == len(ground_truth)
+
         score = sum(1 for p, g in zip(prediction, ground_truth) if p == g)
         return score / len(prediction)
     

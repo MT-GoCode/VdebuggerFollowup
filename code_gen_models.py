@@ -17,7 +17,12 @@ class CodeGenModel(ABC):
             for key in batch.keys():
                 if key == 'id': continue
                 placeholder = f"${key}$"
-                prompt = prompt.replace(placeholder, batch[key][i])
+
+                new_prompt = prompt.replace(placeholder, batch[key][i])
+                if new_prompt == prompt:
+                    raise ValueError(f"Placeholder '{placeholder}' not found in base prompt.")
+                prompt = new_prompt
+
             batch_filled_prompts.append(prompt)
         result = self._generate(batch_filled_prompts)
         return result, batch_filled_prompts
@@ -122,8 +127,10 @@ class VLLMCategory(CodeGenModel):
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             max_tokens=self.config.max_new_tokens,
-            stop=["\n\n"],
+            stop=["\ndef", "\nclass", "\n@"],
         )
+    
+    # def post_process
 
     def general_complete(self, batch_prompts):
         outputs = self.llm.generate(batch_prompts, self.sampling_params, use_tqdm=True)

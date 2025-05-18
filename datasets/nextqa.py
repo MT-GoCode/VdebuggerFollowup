@@ -118,14 +118,15 @@ class NExTQADataset():
             answer_idx = int(cur_sample['answer'])
             possible_answers = [str(cur_sample[f'a{i}']) for i in range(5)]
             answer = possible_answers[answer_idx]
-        if context.stage == 1:
+        
+        if context.stage == 'generation':
             out_dict = {
                 "id": str(sample_id),
                 
                 "query": question,
                 "extra_context": str(possible_answers)
             }
-        elif context.stage == 2:
+        elif context.stage =='execution':
             video_name = str(cur_sample['video'])
             video_path = os.path.join(self.data_path, self.video_to_dir[video_name], video_name + '.mp4')
             video = self.get_video(video_path)
@@ -140,7 +141,7 @@ class NExTQADataset():
                 "auxilary_string": (f"Answer is {answer} of answer choices {possible_answers}"\
                                     + f"Video path: {video_path}")
             }
-        elif context.stage == 3:
+        elif context.stage == 'evaluation':
             out_dict = {
                 "id": str(sample_id),
 

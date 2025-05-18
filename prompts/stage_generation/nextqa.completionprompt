@@ -613,6 +613,28 @@ def execute_command(video, possible_answers, query)->[str, dict]:
     answer = video_segment.select_answer(info, query, possible_answers)
     return answer
 
+# Here is your task:
+
+# This function must return the correct answer by the end. There must be a return statement!
+
+# Please return nothing more than the answer. Nothing more, nothing less. Do not return any other extraneous information about the video, the other answers, how you got your answer, etc. Only the answer.
+
+# The answer MUST come from the possible_answers array. Please make sure you are selecting an answer from here, instead of generating your own. The last line should literally be "return answer", where answer is an element of possible_answers
+
+# You are allowed to use imports, but please place them within the function, and only import from built-in libraries. Do not use any non-built-in libraries.
+
+# Because the frames are sampled evenly from the duration, do not make any assumptions about the framerate. Be very careful not to select the same frame as the start and end to VideoSegment -- check this before initializing a VideoSegment.
+
+# Be careful of empty returns from functions. ImagePatch.find can return an empty list []. ImagePatch.exists or ImagePatch.verify_property can return False for all frames. Avoid manually creating ImagePatch, or using ImagePatch.crop() with invalid bounds -- it must be left, lower, right, upper.
+
+# Have no print statements.
+
+# When writing your function, make use of as many relevant APIs as possible. However, only include APIs that contribute meaningfully to solving the task — do not use unnecessary or unrelated ones. As a recap, the APIs provided to you are: llm_query, ImagePatch.find, ImagePatch.exists, ImagePatch.simple_query, ImagePatch.crop, ImagePatch.verify_property, ImagePatch.best_text_match, VideoSegment.frame_from_index, VideoSegment.trim, VideoSegment.select_answer, VideoSegment.frame_iterator, best_image_match, distance, bool_to_yesno, coerce_to_numeric.
+
+# Do not confuse member functions with non-member functions.
+
+# Do not define any internal functions or any helper functions! def should NOT appear in your function body.
+
 # $query$
 # possible answers: $extra_context$
 def execute_command(video, possible_answers, query)->[str, dict]:

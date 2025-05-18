@@ -396,21 +396,28 @@ def stage_evaluation(stage_evaluation_config, dataset, stage_execution_results, 
 
     eval_json_path = os.path.join(out_dir, "stage_execution_evaluation.json")
 
-    all_answers = []
     all_code_returns = []
 
     for _, stage_execution_sample_result in stage_execution_results.items():
         all_code_returns.append(stage_execution_sample_result['code_return'])
 
-    all_answers = [sample['answer'] for sample in dataset]
+    all_answers = []
+    all_possible_answers = []
+    for sample in dataset:
+        all_answers.append(sample['answer'])
+        all_possible_answers.append(sample['possible_answers'])
 
     accuracy = dataset.accuracy(all_code_returns, all_answers)
     print(f'Final accuracy: {accuracy}')
 
     total_examples = len(all_answers)
     total_execution_errors = 0
+    total_answers_from_possible_answers = 0
 
-    for code_return in all_code_returns:
+    for i, code_return in enumerate(all_code_returns):
+        if code_return in all_possible_answers[i]:
+            total_answers_from_possible_answers += 1
+
         normal_code_return = str(code_return).lower()
         if "error during execution" in normal_code_return:
             total_execution_errors += 1
@@ -418,7 +425,8 @@ def stage_evaluation(stage_evaluation_config, dataset, stage_execution_results, 
     evaluation = {
         "overall_accuracy": accuracy,
         "total_examples": total_examples,
-        "total_error_during_execution": total_execution_errors
+        "total_error_during_execution": total_execution_errors,
+        "total_answers_from_possible_answers": total_answers_from_possible_answers
     }
 
     with open(eval_json_path, "w") as f_json:

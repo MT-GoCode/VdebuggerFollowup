@@ -7,14 +7,12 @@ from torch.utils.data import Dataset
 os.environ["DECORD_NUM_THREADS"] = "1"
 os.environ["FFMPEG_THREADS"] = "1"
 import decord
-from decord import cpu, gpu
+from decord import cpu
 import numpy as np
 
 import numpy as np
 
-from joblib import Memory
-
-from context import context
+from VdebuggerFollowup.context import context
 
 CACHE_DIR = "./video_tensor_iteration_cache"  # Directory to store cached video tensors
 import torch

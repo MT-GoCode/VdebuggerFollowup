@@ -1,4 +1,4 @@
-# Minh's Command Log for reproducibility
+# Command Log for reproducibility
 
 ```
 # ORGANIZATION:
@@ -11,9 +11,10 @@ mkdir datasets
 
 # Three environments will be set up. Keep an eye out.
 # Environments are finicky because we need one environment whose torch version's wheels must be the exact same as the cuda driver (glip-compile) to support building, and one environment for running whose torch version's wheels isn't as strictly required to be same as driver & architecture, but should still be compatible...
-# Optimally, you have a certain architecture with a CUDA driver meant to be used with it, and you (1) compile GLIP and (2) run with torch wheels which match this driver exactly.
+# Optimally, you have a certain architecture with a CUDA driver meant to be used with it, and you (1) compile GLIP and (2) run with torch wheels which match this driver exactly. In this optimal case, you use only one conda env throughout this setup (follow through with viper-main setup, and skip creating glip-compile environment, just run setup.py... see below.) Even better, you set this environment up once and do not change it. VLLM and GLIP have many low-level hooks that are easy to break.
+
 # if the architecture-driver mismatch (ex. driver is a bit ahead of the time when architecture came out), some work will need to be done. Here's what has worked:
-# On a machine with 1080Ti's and CUDA 12.8 driver, the 12.8 driver was far ahead of the 1080Ti. So I used torch with (1) 12.8 wheels for glip-compile environment and (2) 11.8 wheels for the viper-main environment. Somehow, at time of running, these two environments were compatible. 
+# On a machine with 1080Ti's and CUDA 12.8 driver, the 12.8 driver was far ahead of the 1080Ti. So I used torch with (1) 12.8 wheels for glip-compile environment and (2) 11.8 wheels for the viper-main environment. Somehow, at time of running, these two environments were compatible. If you find yourself in a position where you need to do this, know that if it happens to run, that's most likely due to accidental ABI compatibility. 
 # On a machine with A6000s and CUDA 12.8 / 12.6 driver, used torch with 12.8 / 12.6 wheels for viper-main environment and torch with 12.8 / 12.6 wheels for glip-compile environment. In a situation like this, the viper-main environment CAN BE REUSED FOR GLIP COMPILATION--do not create a new conda glip-compile env in this case.
 # Note that if you are just doing code execution, you can use a computer with smaller GPUs. And if you have many, you can load one model on each, then multiprocess the hell out of it. bottleneck is in the generation.
 
@@ -53,7 +54,7 @@ conda create -n glip-compile python=3.10 -y
 conda activate glip-compile
 # Install the wheels that are compatible with the installed CUDA driver version, regardless of what hardware is. we had 12.8 Driver with older 1080Ti's.
 # here are some examples:
-# pip install torch==2.6.0+cu128 --index-url https://download.pytorch.org/whl/cu128 
+# pip install torch --index-url https://download.pytorch.org/whl/cu128 
 
 git checkout cuda-128-compat # switch to the branch compatible with your driver. i made changes to GLIP so it would work in 12.8 and modern numpy. This is all to get setup.py to run. 
 

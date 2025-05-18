@@ -79,301 +79,50 @@ class BaseModel(abc.ABC):
 # ------------------------------ Specific models ---------------------------- #
 
 
-class MiDaSModel(BaseModel):
-    name = 'midas'
+import requests
+from PIL import Image
+import torch
 
-    def __init__(self, gpu_number=0, model_type='DPT_Large'):
-        super().__init__(gpu_number)
-        with HiddenPrints('DepthEstimation'):
-            warnings.simplefilter("ignore")
-            # Model options: MiDaS_small, DPT_Hybrid, DPT_Large
-            depth_estimation_model = hub.load('intel-isl/MiDaS', model_type, pretrained=True).to(self.dev)
-            depth_estimation_model.eval()
+from transformers import Owlv2Processor, Owlv2ForObjectDetection
 
-            midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
-
-        if model_type == "DPT_Large" or model_type == "DPT_Hybrid":
-            self.transform = midas_transforms.dpt_transform
-        else:
-            self.transform = midas_transforms.small_transform
-
-        self.depth_estimation_model = depth_estimation_model
-
-    @torch.no_grad()
-    def forward(self, **kwargs):
-        if kwargs['process_name'] == "midas_depth":
-            """Estimate depth map"""
-            image_numpy = kwargs['image'].cpu().permute(1, 2, 0).numpy() * 255
-            input_batch = self.transform(image_numpy).to(self.dev)
-            prediction = self.depth_estimation_model(input_batch)
-            # Resize to original size
-            prediction = torch.nn.functional.interpolate(
-                prediction.unsqueeze(1),
-                size=image_numpy.shape[:2],
-                mode="bicubic",
-                align_corners=False,
-            ).squeeze()
-            # We compute the inverse because the model returns inverse depth
-            to_return = 1 / prediction
-            to_return = to_return.cpu()
-            return to_return  # To save: plt.imsave(path_save, prediction.cpu().numpy())
-    
-    @classmethod
-    def list_processes(cls):
-        return ['midas_depth']
-
-class MaskRCNNModel(BaseModel):
-    name = 'maskrcnn'
+class OwlV2(BaseModel):
+    name = 'owlv2'
 
     def __init__(self, gpu_number=0):
         super().__init__(gpu_number)
-        with HiddenPrints('MaskRCNN'):
-            obj_detect = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='COCO_V1').to(self.dev)
-            obj_detect.eval()
-            obj_detect.requires_grad_(False)
-        self.categories = torchvision.models.detection.MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.meta['categories']
-        self.obj_detect = obj_detect
 
-    def prepare_image(self, image):
-        image = image.to(self.dev)
-        return image
+        self.processor = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
+        self.model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble").to(self.dev)
 
-    @torch.no_grad()
-    def detect(self, images: torch.Tensor, return_labels=True):
-        threshold = models_config.maskrcnn.processes.maskrcnn_find.detect_threshold
-
-        if type(images) != list:
-            images = [images]
-        images = [self.prepare_image(im) for im in images]
-        detections = self.obj_detect(images)
-        for i in range(len(images)):
-            height = detections[i]['masks'].shape[-2]
-            # Just return boxes (no labels no masks, no scores) with scores > threshold
-            if return_labels:  # In the current implementation, we only return labels
-                d_i = detections[i]['labels'][detections[i]['scores'] > threshold]
-                detections[i] = set([self.categories[d] for d in d_i])
-            else:
-                d_i = detections[i]['boxes'][detections[i]['scores'] > threshold]
-                # Return [left, lower, right, upper] instead of [left, upper, right, lower]
-                detections[i] = torch.stack([d_i[:, 0], height - d_i[:, 3], d_i[:, 2], height - d_i[:, 1]], dim=1)
-
-        return detections
 
     def forward(self, **kwargs):
-        if kwargs['process_name'] == 'maskrcnn_find':
-            obj_detections = self.detect(kwargs['image'], kwargs.get('return_labels', False))
-            # Move to CPU before sharing. Alternatively we can try cloning tensors in CUDA, but may not work
-            obj_detections = [(v.to('cpu') if isinstance(v, torch.Tensor) else list(v)) for v in obj_detections]
-            return obj_detections
-    
+        if kwargs['process_name'] == 'owlv2_find':
+            labels = [[kwargs['label']]]
+            image = transforms.ToPILImage()(kwargs['image'])
+
+            inputs = self.processor(text=labels, images=image, return_tensors="pt")
+            inputs = {k: v.to(self.dev) for k, v in inputs.items()}
+            outputs = self.model(**inputs)
+
+            target_sizes = torch.tensor([(image.height, image.width)])
+
+            results = self.processor.post_process_grounded_object_detection(outputs=outputs, target_sizes=target_sizes, threshold=0.1, text_labels=labels)
+
+            result = results[0]
+
+            boxes, scores, text_labels = result["boxes"], result["scores"], result["text_labels"]
+            out_bboxes = []
+            for box, score, text_label in zip(boxes, scores, text_labels):
+                if score > models_config.owlv2.processes.owlv2_find.detect_threshold:
+                    out_bboxes.append([v.detach().cpu().item() for v in box])
+                    # order is correct.
+
+            return out_bboxes
+
+
     @classmethod
     def list_processes(cls):
-        return ['maskrcnn_find']
-
-class GLIPModel(BaseModel):
-    name = 'glip'
-
-    def __init__(self, model_size=models_config.glip.size, gpu_number=0, **kwargs):
-        BaseModel.__init__(self, gpu_number)
-
-        os.environ["PYTHONPATH"] = os.path.abspath("./GLIP")
-
-        with contextlib.redirect_stderr(open(os.devnull, "w")):  # Do not print nltk_data messages when importing
-            from maskrcnn_benchmark.engine.predictor_glip import GLIPDemo, to_image_list, create_positive_map, \
-                create_positive_map_label_to_token_from_positive_map
-
-        working_dir = models_config.glip.checkpoint_dir
-        if model_size == 'tiny':
-            config_file = working_dir + "configs/glip_Swin_T_O365_GoldG.yaml"
-            weight_file = working_dir + "checkpoints/glip_tiny_model_o365_goldg_cc_sbu.pth"
-        else:  # large
-            config_file = working_dir + "configs/glip_Swin_L.yaml"
-            weight_file = working_dir + "checkpoints/glip_large_model.pth"
-
-        class OurGLIPDemo(GLIPDemo):
-
-            def __init__(self, dev, **kwargs_demo):
-
-                kwargs = {
-                    'min_image_size': 800,
-                    'confidence_threshold': models_config.glip.processes.glip_find.detect_threshold,
-                    'show_mask_heatmaps': False
-                }
-
-                self.dev = dev
-
-                from maskrcnn_benchmark.config import cfg
-
-                # manual override some options
-                cfg.local_rank = 0
-                cfg.num_gpus = 1
-                cfg.merge_from_file(config_file)
-                cfg.merge_from_list(["MODEL.WEIGHT", weight_file])
-                cfg.merge_from_list(["MODEL.DEVICE", self.dev])
-
-                with HiddenPrints("GLIP"), torch.cuda.device(self.dev):
-                    from transformers.utils import logging
-                    logging.set_verbosity_error()
-                    GLIPDemo.__init__(self, cfg, **kwargs_demo)
-                if self.cfg.MODEL.RPN_ARCHITECTURE == "VLDYHEAD":
-                    plus = 1
-                else:
-                    plus = 0
-                self.plus = plus
-                self.color = 255
-
-            @torch.no_grad()
-            def compute_prediction(self, original_image, original_caption, custom_entity=None):
-                image = self.transforms(original_image)
-                # image = [image, image.permute(0, 2, 1)]
-                image_list = to_image_list(image, self.cfg.DATALOADER.SIZE_DIVISIBILITY)
-                image_list = image_list.to(self.dev)
-                # caption
-                if isinstance(original_caption, list):
-
-                    if len(original_caption) > 40:
-                        all_predictions = None
-                        for loop_num, i in enumerate(range(0, len(original_caption), 40)):
-                            list_step = original_caption[i:i + 40]
-                            prediction_step = self.compute_prediction(original_image, list_step, custom_entity=None)
-                            if all_predictions is None:
-                                all_predictions = prediction_step
-                            else:
-                                # Aggregate predictions
-                                all_predictions.bbox = torch.cat((all_predictions.bbox, prediction_step.bbox), dim=0)
-                                for k in all_predictions.extra_fields:
-                                    all_predictions.extra_fields[k] = \
-                                        torch.cat((all_predictions.extra_fields[k],
-                                                   prediction_step.extra_fields[k] + loop_num), dim=0)
-                        return all_predictions
-
-                    # we directly provided a list of category names
-                    caption_string = ""
-                    tokens_positive = []
-                    seperation_tokens = " . "
-                    for word in original_caption:
-                        tokens_positive.append([len(caption_string), len(caption_string) + len(word)])
-                        caption_string += word
-                        caption_string += seperation_tokens
-
-                    tokenized = self.tokenizer([caption_string], return_tensors="pt")
-                    # tokens_positive = [tokens_positive]  # This was wrong
-                    tokens_positive = [[v] for v in tokens_positive]
-
-                    original_caption = caption_string
-                    # print(tokens_positive)
-                else:
-                    tokenized = self.tokenizer([original_caption], return_tensors="pt")
-                    if custom_entity is None:
-                        tokens_positive = self.run_ner(original_caption)
-                    # print(tokens_positive)
-                # process positive map
-                positive_map = create_positive_map(tokenized, tokens_positive)
-
-                positive_map_label_to_token = create_positive_map_label_to_token_from_positive_map(positive_map,
-                                                                                                   plus=self.plus)
-                self.positive_map_label_to_token = positive_map_label_to_token
-                tic = timeit.time.perf_counter()
-
-                # compute predictions
-                with HiddenPrints():  # Hide some deprecated notices
-                    predictions = self.model(image_list, captions=[original_caption],
-                                             positive_map=positive_map_label_to_token)
-                predictions = [o.to(self.cpu_device) for o in predictions]
-                # print("inference time per image: {}".format(timeit.time.perf_counter() - tic))
-
-                # always single image is passed at a time
-                prediction = predictions[0]
-
-                # reshape prediction (a BoxList) into the original image size
-                height, width = original_image.shape[-2:]
-                # if self.tensor_inputs:
-                # else:
-                #     height, width = original_image.shape[:-1]
-                prediction = prediction.resize((width, height))
-
-                if prediction.has_field("mask"):
-                    # if we have masks, paste the masks in the right position
-                    # in the image, as defined by the bounding boxes
-                    masks = prediction.get_field("mask")
-                    # always single image is passed at a time
-                    masks = self.masker([masks], [prediction])[0]
-                    prediction.add_field("mask", masks)
-
-                return prediction
-
-            @staticmethod
-            def to_left_right_upper_lower(bboxes):
-                return [(bbox[1], bbox[3], bbox[0], bbox[2]) for bbox in bboxes]
-
-            @staticmethod
-            def to_xmin_ymin_xmax_ymax(bboxes):
-                # invert the previous method
-                return [(bbox[2], bbox[0], bbox[3], bbox[1]) for bbox in bboxes]
-
-            @staticmethod
-            def prepare_image(image):
-                image = image[[2, 1, 0]]  # convert to bgr for opencv-format for glip
-                return image
-
-            @torch.no_grad()
-            def forward(self, **kwargs):
-
-                """
-                expected args: image: torch.Tensor, obj: Union[str, list], return_labels: bool = False,
-                        confidence_threshold=None
-                """
-
-                if kwargs.get('confidence_threshold', None) is not None:
-                    original_confidence_threshold = self.confidence_threshold
-                    self.confidence_threshold = kwargs['confidence_threshold']
-
-                # if isinstance(object, list):
-                #     object = ' . '.join(object) + ' .' # add separation tokens
-                image = self.prepare_image(kwargs['image'])
-
-                # Avoid the resizing creating a huge image in a pathological case
-                ratio = image.shape[1] / image.shape[2]
-                ratio = max(ratio, 1 / ratio)
-                original_min_image_size = self.min_image_size
-                if ratio > 10:
-                    self.min_image_size = int(original_min_image_size * 10 / ratio)
-                    self.transforms = self.build_transform()
-
-                with torch.cuda.device(self.dev):
-                    inference_output = self.inference(image, kwargs['obj'])
-
-                bboxes = inference_output.bbox.cpu().numpy().astype(int)
-                # bboxes = self.to_left_right_upper_lower(bboxes)
-
-                if ratio > 10:
-                    self.min_image_size = original_min_image_size
-                    self.transforms = self.build_transform()
-
-                bboxes = torch.tensor(bboxes)
-
-                # Convert to [left, lower, right, upper] instead of [left, upper, right, lower]
-                height = image.shape[-2]
-                bboxes = torch.stack([bboxes[:, 0], height - bboxes[:, 3], bboxes[:, 2], height - bboxes[:, 1]], dim=1)
-
-                # reset threshold
-                if kwargs.get('confidence_threshold', None) is not None:
-                    self.confidence_threshold = original_confidence_threshold
-                    
-                if kwargs.get('return_labels', False):
-                    # subtract 1 because it's 1-indexed for some reason
-                    return bboxes, inference_output.get_field("labels").cpu().numpy() - 1
-                return bboxes
-
-        self.glip_demo = OurGLIPDemo(dev=self.dev, **kwargs)
-
-    def forward(self, **kwargs):
-        if kwargs['process_name'] == 'glip_find':
-            return self.glip_demo.forward(**kwargs)
-    
-    @classmethod
-    def list_processes(cls):
-        return ['glip_find']
+        return ['owlv2_find']
 
 @cache.cache(ignore=['result']) # will store result in the cache, but not use result as part of the cache key.
 def gpt3_cache_aux(fn_name, prompts, temperature, n_votes, result):
@@ -558,24 +307,25 @@ class BLIPModel(BaseModel):
     def forward(self, **kwargs):
         # forward looks different because this model must operate on batches
         # always batches
-        process_name, image, question = kwargs['process_name'], kwargs['image'], kwargs['question']
+        process_names, images, questions = kwargs['process_name'], kwargs['image'], kwargs['question']
 
-        if len(image) > 0 and 'float' in str(image[0].dtype) and image[0].max() <= 1:
-            image = [im * 255 for im in image]
+        if len(images) > 0 and 'float' in str(images[0].dtype) and images[0].max() <= 1:
+            images = [im * 255 for im in images]
 
         # Separate into qa and caption batches.
-        prompts_qa = [self.qa_prompt.format(self.pre_question(q)) for q, t in zip(question, process_name) if t == 'blip_qa']
-        images_qa = [im for i, im in enumerate(image) if process_name[i] == 'blip_qa']
+        prompts_qa = []
+        prompts_qa = [self.qa_prompt.format(self.pre_question(q)) for q, t in zip(questions, process_names) if t == 'blip_qa']
+        images_qa = [im for i, im in enumerate(images) if process_names[i] == 'blip_qa']
 
 
-        images_caption = [im for i, im in enumerate(image) if process_name[i] == 'blip_caption']
+        images_caption = [im for i, im in enumerate(images) if process_names[i] == 'blip_caption']
 
         with torch.cuda.device(self.dev):
             response_qa = self.qa(images_qa, prompts_qa) if len(images_qa) > 0 else []
             response_caption = self.caption(images_caption) if len(images_caption) > 0 else []
 
         response = []
-        for t in process_name:
+        for t in process_names:
             if t == 'blip_qa':
                 response.append(response_qa.pop(0))
             else:
@@ -1164,3 +914,96 @@ class CLIPModel(BaseModel):
 #         if isinstance(out, torch.Tensor):
 #             out = out.cpu()
 #         return out
+
+
+# class MiDaSModel(BaseModel):
+#     name = 'midas'
+
+#     def __init__(self, gpu_number=0, model_type='DPT_Large'):
+#         super().__init__(gpu_number)
+#         with HiddenPrints('DepthEstimation'):
+#             warnings.simplefilter("ignore")
+#             # Model options: MiDaS_small, DPT_Hybrid, DPT_Large
+#             depth_estimation_model = hub.load('intel-isl/MiDaS', model_type, pretrained=True).to(self.dev)
+#             depth_estimation_model.eval()
+
+#             midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+
+#         if model_type == "DPT_Large" or model_type == "DPT_Hybrid":
+#             self.transform = midas_transforms.dpt_transform
+#         else:
+#             self.transform = midas_transforms.small_transform
+
+#         self.depth_estimation_model = depth_estimation_model
+
+#     @torch.no_grad()
+#     def forward(self, **kwargs):
+#         if kwargs['process_name'] == "midas_depth":
+#             """Estimate depth map"""
+#             image_numpy = kwargs['image'].cpu().permute(1, 2, 0).numpy() * 255
+#             input_batch = self.transform(image_numpy).to(self.dev)
+#             prediction = self.depth_estimation_model(input_batch)
+#             # Resize to original size
+#             prediction = torch.nn.functional.interpolate(
+#                 prediction.unsqueeze(1),
+#                 size=image_numpy.shape[:2],
+#                 mode="bicubic",
+#                 align_corners=False,
+#             ).squeeze()
+#             # We compute the inverse because the model returns inverse depth
+#             to_return = 1 / prediction
+#             to_return = to_return.cpu()
+#             return to_return  # To save: plt.imsave(path_save, prediction.cpu().numpy())
+    
+#     @classmethod
+#     def list_processes(cls):
+#         return ['midas_depth']
+
+
+# class MaskRCNNModel(BaseModel):
+#     name = 'maskrcnn'
+
+#     def __init__(self, gpu_number=0):
+#         super().__init__(gpu_number)
+#         with HiddenPrints('MaskRCNN'):
+#             obj_detect = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='COCO_V1').to(self.dev)
+#             obj_detect.eval()
+#             obj_detect.requires_grad_(False)
+#         self.categories = torchvision.models.detection.MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.meta['categories']
+#         self.obj_detect = obj_detect
+
+#     def prepare_image(self, image):
+#         image = image.to(self.dev)
+#         return image
+
+#     @torch.no_grad()
+#     def detect(self, images: torch.Tensor, return_labels=True):
+#         threshold = models_config.maskrcnn.processes.maskrcnn_find.detect_threshold
+
+#         if type(images) != list:
+#             images = [images]
+#         images = [self.prepare_image(im) for im in images]
+#         detections = self.obj_detect(images)
+#         for i in range(len(images)):
+#             height = detections[i]['masks'].shape[-2]
+#             # Just return boxes (no labels no masks, no scores) with scores > threshold
+#             if return_labels:  # In the current implementation, we only return labels
+#                 d_i = detections[i]['labels'][detections[i]['scores'] > threshold]
+#                 detections[i] = set([self.categories[d] for d in d_i])
+#             else:
+#                 d_i = detections[i]['boxes'][detections[i]['scores'] > threshold]
+#                 # Return [left, lower, right, upper] instead of [left, upper, right, lower]
+#                 detections[i] = torch.stack([d_i[:, 0], height - d_i[:, 3], d_i[:, 2], height - d_i[:, 1]], dim=1)
+
+#         return detections
+
+#     def forward(self, **kwargs):
+#         if kwargs['process_name'] == 'maskrcnn_find':
+#             obj_detections = self.detect(kwargs['image'], kwargs.get('return_labels', False))
+#             # Move to CPU before sharing. Alternatively we can try cloning tensors in CUDA, but may not work
+#             obj_detections = [(v.to('cpu') if isinstance(v, torch.Tensor) else list(v)) for v in obj_detections]
+#             return obj_detections
+    
+#     @classmethod
+#     def list_processes(cls):
+#         return ['maskrcnn_find']

@@ -81,6 +81,7 @@ stage_execution:
             processes:
                 maskrcnn_find:
                     detect_threshold: 0.8
+                    assign_gpu: 0
         glip:
             checkpoint_dir: ./pretrained_models/GLIP/
             size: large # large or tiny
@@ -148,7 +149,7 @@ stage_execution:
             model: blip2-flan-t5-xl
             precision: '8-bit' # 8-bit or full
             processes:
-                blip_qa: # no further configuration
+                blip_qa:
                 blip_caption: # no further configuration
     
     # API configuration

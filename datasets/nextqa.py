@@ -6,16 +6,8 @@ from torch.utils.data import Dataset
 import decord
 from decord import cpu, gpu
 import numpy as np
-import spacy
 
-from nltk.tokenize import word_tokenize
-from nltk.corpus import wordnet
 import numpy as np
-
-
-from pywsd.utils import lemmatize_sentence
-from collections import Counter
-
 from context import context
 
 def load_file(file_name):
@@ -56,8 +48,6 @@ class NExTQADataset():
         self.data_path = kwargs["data_path"]
         self.list_path = kwargs["list_path"]
         self.version = kwargs["version"]
-        self.sample_fps = kwargs["sample_fps"]
-        self.max_num_frames = kwargs["max_num_frames"]
 
         # sample_list_path = os.path.join(self.data_path, directory, f'{split}.csv')
         self.list_path = os.path.expandvars(self.list_path)
@@ -88,6 +78,10 @@ class NExTQADataset():
             for video in os.listdir(os.path.join(self.data_path, directory)):
                 self.video_to_dir[video.split('.')[0]] = directory
 
+
+        self.sample_fps = kwargs['stage_execution']["sample_fps"]
+        self.max_num_frames = kwargs['stage_execution']["max_num_frames"]
+
     def get_sample_path(self, index):
         sample_id = self.sample_ids[index]
         cur_sample = self.sample_list.loc[sample_id]
@@ -101,7 +95,7 @@ class NExTQADataset():
         decord.bridge.set_bridge('torch')
         vlen = len(video_reader)
         original_fps = video_reader.get_avg_fps()
-        num_frames = int(vlen * self.fps / original_fps)
+        num_frames = int(vlen * self.sample_fps / original_fps)
         num_frames = min(self.max_num_frames, num_frames)
         frame_idxs = np.linspace(0, vlen, num_frames, endpoint=False).astype(np.int64)
         video = video_reader.get_batch(frame_idxs).byte()
@@ -124,14 +118,14 @@ class NExTQADataset():
             answer_idx = int(cur_sample['answer'])
             possible_answers = [str(cur_sample[f'a{i}']) for i in range(5)]
             answer = possible_answers[answer_idx]
-        if context.get_stage() == 1:
+        if context.stage == 1:
             out_dict = {
                 "id": str(sample_id),
                 
                 "query": question,
                 "extra_context": str(possible_answers)
             }
-        elif context.get_stage() == 2:
+        elif context.stage == 2:
             video_name = str(cur_sample['video'])
             video_path = os.path.join(self.data_path, self.video_to_dir[video_name], video_name + '.mp4')
             video = self.get_video(video_path)
@@ -140,6 +134,16 @@ class NExTQADataset():
                 "id": str(sample_id),
 
                 "video": video,
+                "query": question,
+                "possible_answers": possible_answers,
+                
+                "auxilary_string": (f"Answer is {answer} of answer choices {possible_answers}"\
+                                    + f"Video path: {video_path}")
+            }
+        elif context.stage == 3:
+            out_dict = {
+                "id": str(sample_id),
+
                 "query": question,
                 "possible_answers": possible_answers,
                 
@@ -184,91 +188,3 @@ class NExTQADataset():
             score = sum(1 for p, g in zip(prediction, ground_truth) if p == g)
 
         return score / len(prediction)
-
-
-# Below is code from https://github.com/doc-doc/NExT-OE/blob/main/eval_oe.py
-
-stopwords = "i, me, my, myself, we, our, ours, ourselves, you, you're, you've, you'll, you'd, your, yours, yourself, " \
-            "yourselves, he, him, his, himself, she, she's, her, hers, herself, it, it's, its, itself, they, them, " \
-            "their, theirs, themselves, what, which, who, whom, this, that, that'll, these, those, am, is, are, was, " \
-            "were, be, been, being, have, has, had, having, do, does, did, doing, a, an, the, and, but, if, or, " \
-            "because, as, until, while, to, from, of, at, for, with, about, into, through, during, again, further, " \
-            "then, here, there, when, where, why, how, all, any, each, most, other, some, such, only, own, so, than, " \
-            "too, very, s, t, can, will, just, don, don't, should, should've, now, d, ll, m, o, re, ve, y, ain, " \
-            "aren, aren't, couldn, couldn't, didn, didn't, doesn, doesn't, hadn, hadn't, hasn, hasn't, haven, " \
-            "haven't, isn, isn't, ma, mightn, mightn't, mustn, mustn't, needn, needn't, shan, shan't, shouldn, " \
-            "shouldn't, wasn, wasn't, weren, weren't, won, won't, wouldn, wouldn't"
-
-
-def remove_stop(sentence):
-
-    words = lemmatize_sentence(sentence)
-    words = [w for w in words if not w in stopwords]
-    return ' '.join(words)
-
-
-def wup(word1, word2, alpha):
-    """
-    calculate the wup similarity
-    :param word1:
-    :param word2:
-    :param alpha:
-    :return:
-    """
-    # print(word1, word2)
-    if word1 == word2:
-        return 1.0
-
-    w1 = wordnet.synsets(word1)
-    w1_len = len(w1)
-    if w1_len == 0: return 0.0
-    w2 = wordnet.synsets(word2)
-    w2_len = len(w2)
-    if w2_len == 0: return 0.0
-
-    #match the first
-    word_sim = w1[0].wup_similarity(w2[0])
-    if word_sim is None:
-        word_sim = 0.0
-
-    if word_sim < alpha:
-        word_sim = 0.1*word_sim
-    return word_sim
-
-
-def wups(words1, words2, alpha):
-    """
-    :param pred:
-    :param truth:
-    :param alpha:
-    :return:
-    """
-    sim = 1.0
-    flag = False
-    for w1 in words1:
-        max_sim = 0
-        for w2 in words2:
-            word_sim = wup(w1, w2, alpha)
-            if word_sim > max_sim:
-                max_sim = word_sim
-        if max_sim == 0: continue
-        sim *= max_sim
-        flag = True
-    if not flag:
-        sim = 0.0
-    return sim
-
-
-def get_wups(pred, truth, alpha):
-    """
-    calculate the wups score
-    :param pred:
-    :param truth:
-    :return:
-    """
-    pred = word_tokenize(pred)
-    truth = word_tokenize(truth)
-    item1 = wups(pred, truth, alpha)
-    item2 = wups(truth, pred, alpha)
-    value = min(item1, item2)
-    return value

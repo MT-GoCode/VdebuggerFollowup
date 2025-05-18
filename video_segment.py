@@ -59,7 +59,8 @@ class VideoSegment:
         self.num_frames = self.trimmed_video.shape[0]
 
         self.cache = {}
-        self.queues = (None, None) if queues is None else queues
+
+        self.queues = queues
 
         if self.trimmed_video.shape[0] == 0:
             raise Exception("VideoSegment has duration=0")

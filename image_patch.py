@@ -19,7 +19,7 @@ console = Console(highlight=False)
 image_patch_api_config = config.stage_execution.image_patch
 models_config = config.stage_execution.models
 
-def llm_query(query, long_answer=True, queues=None):
+def llm_query(query, long_answer=None, queues=None):
     """Answers a text question using GPT. The input question is always a formatted string with a variable in it.
 
     Parameters
@@ -77,8 +77,8 @@ class ImagePatch:
     """
 
     def __init__(self, image: Union[Image.Image, torch.Tensor, np.ndarray], left: int = None, lower: int = None,
-                 right: int = None, upper: int = None, parent_left=0, parent_lower=0, queues=None,
-                 parent_img_patch=None):
+                 right: int = None, upper: int = None, parent_left=0, parent_lower=0,
+                 parent_img_patch=None, queues = None):
         """Initializes an ImagePatch object by cropping the image at the given coordinates and stores the coordinates as
         attributes. If no coordinates are provided, the image is left unmodified, and the coordinates are set to the
         dimensions of the image.
@@ -122,7 +122,6 @@ class ImagePatch:
         self.width = self.cropped_image.shape[2]
 
         self.cache = {}
-        self.queues = (None, None) if queues is None else queues
 
         self.parent_img_patch = parent_img_patch
 
@@ -134,7 +133,9 @@ class ImagePatch:
 
         self.possible_options = load_json('./useful_lists/possible_options.json')
 
-    def forward(self, **kwargs):
+        self.queues = queues
+
+    def forward(self, **kwargs): # kwargs should have process name
         return forward(queues=self.queues, **kwargs)
 
     @property
@@ -157,19 +158,22 @@ class ImagePatch:
         List[ImagePatch]
             a list of ImagePatch objects matching object_name contained in the crop
         """
-        if object_name in ["object", "objects"]:
-            all_object_coordinates = self.forward(process_name = 'maskrcnn_find',
-                                                  image = self.cropped_image)[0]
-        else:
-
-            if object_name == 'person':
-                object_name = 'people'  # GLIP does better at people than person
-
-            all_object_coordinates = self.forward(process_name = 'glip_find',
+        all_object_coordinates = self.forward(process_name = image_patch_api_config.find.use_process,
                                                   image = self.cropped_image,
-                                                  obj = object_name)
-        if len(all_object_coordinates) == 0:
-            return []
+                                                  label = object_name)
+        # if object_name in ["object", "objects"]:
+        #     all_object_coordinates = self.forward(process_name = 'maskrcnn_find',
+        #                                           image = self.cropped_image)[0]
+        # else:
+
+        #     if object_name == 'person':
+        #         object_name = 'people'  # GLIP does better at people than person
+
+        #     all_object_coordinates = self.forward(process_name = 'glip_find',
+        #                                           image = self.cropped_image,
+        #                                           obj = object_name)
+        # if len(all_object_coordinates) == 0:
+        #     return []
 
         threshold = image_patch_api_config.find.ratio_box_area_to_image_area
         if threshold > 0:
@@ -336,8 +340,8 @@ class ImagePatch:
             right = min(self.width, right + 10)
             upper = min(self.height, upper + 10)
 
-        return ImagePatch(self.cropped_image, left, lower, right, upper, self.left, self.lower, queues=self.queues,
-                          parent_img_patch=self)
+        return ImagePatch(self.cropped_image, left, lower, right, upper, self.left, self.lower,
+                          parent_img_patch=self, queues=self.queues, )
 
     def overlaps_with(self, left, lower, right, upper):
         """Returns True if a crop with the given coordinates overlaps with this one,
@@ -411,13 +415,13 @@ def bool_to_yesno(bool_answer: bool) -> str:
     """
     return "yes" if bool_answer else "no"
 
-
-def process_guesses(prompt, guess1=None, guess2=None, queues=None):
-    return forward(
-        process_name='gpt_guess',
-        prompt=[prompt, guess1, guess2],
-        queues=queues
-    )
+# OBSOLETE
+# def process_guesses(prompt, guess1=None, guess2=None, output_queue_to_use=None):
+#     return forward(
+#         process_name='gpt_guess',
+#         prompt=[prompt, guess1, guess2],
+#         output_queue_to_use=output_queue_to_use
+#     )
 
 
 def coerce_to_numeric(string, no_string=False):

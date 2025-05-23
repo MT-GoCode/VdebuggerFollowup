@@ -30,7 +30,7 @@ from tqdm import tqdm
 # upgrade: batching
 # @memory.cache
 from functools import lru_cache
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=10) # this choice should be made based on number of samples/questions per video and number of workers. what's the maximum possible video "spread" the workers could have at a time? or just, how many can fit in CPU RAM given your choice of frames?
 def tensorize_video(video_path, total_frames):
 
     # determining frame count
@@ -160,7 +160,7 @@ class LVBenchDataset(Dataset):
                 "query": question,
                 "possible_answers": possible_answers,
                 
-                "answer": answer
+                "auxiliary_string": (f"Video path: {video_path}\n ANSWER IS \n{answer}\n OF ANSWER CHOICES \n{possible_answers}\n")
             }
         elif context.stage == 'evaluation':
             out_dict = {

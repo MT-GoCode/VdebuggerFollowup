@@ -138,8 +138,7 @@ class NExTQADataset():
                 "query": question,
                 "possible_answers": possible_answers,
                 
-                "auxilary_string": (f"Answer is {answer} of answer choices {possible_answers}"\
-                                    + f"Video path: {video_path}")
+                "auxiliary_string": (f"Video path: {video_path}\n Answer is \n{answer}\n of answer choices \n{possible_answers}\n")
             }
         elif context.stage == 'evaluation':
             out_dict = {

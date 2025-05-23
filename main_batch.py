@@ -91,60 +91,63 @@ def run_program(dataset_function_parameters, timeout, log_to_stdout, function_bo
     with open(filename, 'w') as f:
         f.write(code)
 
-    x = importlib.import_module(modulename)
-    time.sleep(5)
+    try: # this try/except is for dynamic write & import, catching any syntax errors
+        x = importlib.import_module(modulename)
+        time.sleep(5)
+    
 
-    dataset_function_arguments = {key: sample[key] for key in sample if key not in ("id", "auxiliary_string")}
+        dataset_function_arguments = {key: sample[key] for key in sample if key not in ("id", "auxiliary_string")}
 
-    try:
-        # for multiprocessing
-        queues=(model_processes_input_queues, worker_reusable_output_queue)
+        if config.stage_execution.multiprocessing.use:
+            queues=(model_processes_input_queues, worker_reusable_output_queue)
 
-        args_dict = {
-            **dataset_function_arguments,
-            "ImagePatch": partial(ImagePatch, queues = queues),
-            "VideoSegment": partial(VideoSegment, queues = queues),
-            "llm_query": partial(llm_query, queues=queues),
-            "bool_to_yesno": bool_to_yesno,
-            "distance": distance,
-            "best_image_match": best_image_match,
-            "coerce_to_numeric": coerce_to_numeric
-        }
+            args_dict = {
+                **dataset_function_arguments,
+                "ImagePatch": partial(ImagePatch, queues = queues),
+                "VideoSegment": partial(VideoSegment, queues = queues),
+                "llm_query": partial(llm_query, queues=queues),
+                "bool_to_yesno": bool_to_yesno,
+                "distance": distance,
+                "best_image_match": best_image_match,
+                "coerce_to_numeric": coerce_to_numeric
+            }
 
-    except NameError as e: # singleprocessing
-        args_dict = {
-            **dataset_function_arguments,
-            "ImagePatch": ImagePatch,
-            "VideoSegment": VideoSegment,
-            "llm_query": llm_query,
-            "bool_to_yesno": bool_to_yesno,
-            "distance": distance,
-            "best_image_match": best_image_match,
-            "coerce_to_numeric": coerce_to_numeric
-        }
+        else:
+            args_dict = {
+                **dataset_function_arguments,
+                "ImagePatch": ImagePatch,
+                "VideoSegment": VideoSegment,
+                "llm_query": llm_query,
+                "bool_to_yesno": bool_to_yesno,
+                "distance": distance,
+                "best_image_match": best_image_match,
+                "coerce_to_numeric": coerce_to_numeric
+            }
 
-    import threading
-    import traceback
-    import os
-    import sys
 
-    result = None
-    exc_info = None  # Will hold exception info from thread if any
+        # RUNNING
 
-    def run_command():
-        nonlocal result, exc_info
-        try:
-            result = x.execute_command(**args_dict)
-        except Exception:
-            exc_info = sys.exc_info()  # (exc_type, exc_value, traceback)
+        import threading
+        import traceback
+        import os
+        import sys
 
-    try:
+        result = None
+        exc_info = None  # Will hold exception info from thread if any
+
+        def run_command():
+            nonlocal result, exc_info
+            try:
+                result = x.execute_command(**args_dict)
+            except Exception:
+                exc_info = sys.exc_info()  # (exc_type, exc_value, traceback)
+
         # EXECUTION + ARGUMENT LOGGING
         print_section('-', f"SAMPLE ID: {sample_id} INVOCATION", f"{filename}.execute_command(**args_dict)", worker_log_path, log_to_stdout)
         arg_string = "\n".join(f"{k}: {repr(v)}" for k, v in args_dict.items())
         print_section('-', f"SAMPLE ID: {sample_id} ARGUMENTS", arg_string, worker_log_path, log_to_stdout)
 
-        # Run command in a separate thread with timeout
+        # FINAL INVOCATION
         thread = threading.Thread(target=run_command)
         thread.start()
         thread.join(timeout)
@@ -161,7 +164,14 @@ def run_program(dataset_function_parameters, timeout, log_to_stdout, function_bo
             formatted_tb = ''.join(traceback.format_exception(etype, evalue, tb))
             print_section('!', "RUNTIME ERROR", f"Sample {sample_id} failed with error: {evalue}. \n Traceback: \n{formatted_tb}", worker_log_path, log_to_stdout)
             result = "error during execution"
-
+        
+    except SyntaxError as e:
+        result = f"syntax error: {e}"
+        print(f"syntax error for sample {sample_id}")
+    except Exception as e:
+        # Optional catch for unexpected non-syntax errors
+        result = "very unexpected error while running program, ugh"
+        print(f"Unexpected error for sample {sample_id}: {e}")
     finally:
         os.remove(filename)
 
@@ -183,19 +193,19 @@ def config_check_and_init():
 
     # Check if artifact folder exists
     if not os.path.isdir(config.artifact_folder):
-        print(f"❌ Error: Artifact folder does not exist: {config.artifact_folder}")
+        print(f"Error: Artifact folder does not exist: {config.artifact_folder}")
         sys.exit(1)
 
     # Validate trial_name (if provided)
     if config.trial_name is not None:
         # Ensure it's a valid filename (basic check: alphanum + dash/underscore)
         if not re.match(r'^[\w\-\.]+$', config.trial_name):
-            print(f"❌ Error: Invalid trial name: {config.trial_name}")
+            print(f"Error: Invalid trial name: {config.trial_name}")
             sys.exit(1)
 
         trial_path = os.path.join(config.artifact_folder, config.trial_name)
         if os.path.exists(trial_path):
-            print(f"❌ Error: Trial folder already exists: {trial_path}")
+            print(f"Error: Trial folder already exists: {trial_path}")
             sys.exit(1)
     else:
         # No trial name — generate one with PST date-time
@@ -206,7 +216,7 @@ def config_check_and_init():
         trial_path = os.path.join(config.artifact_folder, config.trial_name)
 
     os.mkdir(trial_path)
-    print(f"✅ Trial folder will be: {trial_path}")
+    print(f"Trial folder will be: {trial_path}")
 
     import shutil
     save_to = os.path.join(trial_path, os.path.basename(config._metadata_path))
@@ -352,7 +362,6 @@ def stage_execution_multiprocessing(stage_execution_config, dataset, stage_gener
         for i in range(len(dataset_)):
             yield dataset_[i]
 
-    # Pass worker index to each worker during initialization
     with mp.Pool(
         processes=n_workers,
         initializer=worker_init,
@@ -377,7 +386,7 @@ def stage_execution_multiprocessing(stage_execution_config, dataset, stage_gener
 
     finish_all_consumers(model_processes_input_queues, model_process_process_directory)
 
-    import pdb; pdb.set_trace()
+    manager.shutdown()
 
     result = {}
     for sample_id, (code_return, code) in zip(all_sample_ids, results): 
@@ -394,7 +403,7 @@ def stage_execution_multiprocessing(stage_execution_config, dataset, stage_gener
     
 def stage_evaluation(stage_evaluation_config, dataset, stage_execution_results, out_dir):
 
-    eval_json_path = os.path.join(out_dir, "stage_execution_evaluation.json")
+    eval_json_path = os.path.join(out_dir, "stage_evaluation_result.json")
 
     all_code_returns = []
 

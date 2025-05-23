@@ -33,10 +33,11 @@ def initialize_models_and_processes(
                    if issubclass(m[1], vision_models.BaseModel) and m[1] != vision_models.BaseModel]
     # Sort by attribute "load_order"
     list_models.sort(key=lambda x: x.load_order)
-    
 
     # setting up functions to later set up consumer functions  
     if stage_execution_config.multiprocessing.use:
+
+        model_processes_input_queues['METADATA_DUPLICATE_PROCESSES'] = []    
 
         def setup_process_process(uninstantiated_model_class, model_init_args, process_name_):
             """
@@ -153,9 +154,11 @@ def initialize_models_and_processes(
         if model_class_.name in stage_execution_config.models and stage_execution_config.models[model_class_.name].load:
             
             if model_class_.requires_gpu: 
-                    
+                                    
                 for process_name_ in model_class_.list_processes():
-                    intended_gpu = stage_execution_config.models[model_class_.name].processes[process_name_].gpu
+                    process_config = stage_execution_config.models[model_class_.name].processes[process_name_]
+
+                    intended_gpu = process_config.gpu
 
                     # PROCESS ASSIGNMENT
                     print(f"{process_name_} maps to {model_class_}" )
@@ -163,9 +166,22 @@ def initialize_models_and_processes(
                     if not stage_execution_config.multiprocessing.use:
                         context.model_process_map[process_name_] = make_fn_singleprocessing(model_class_(gpu_number=intended_gpu), process_name_)
                     else:
-                        print(f"Model {model_class_} is going to {intended_gpu}")
-                        model_process_process_directory[process_name_] = setup_process_process(model_class_, {"gpu_number": intended_gpu}, process_name_)
-                
+                        if 'duplicate_onto_gpu' in process_config.keys():
+                            instance_process_name = process_name_ + "_inst_0"
+                            print(f"{instance_process_name} is going to gpu {intended_gpu}")
+                            model_process_process_directory[instance_process_name] = setup_process_process(model_class_, {"gpu_number": intended_gpu}, instance_process_name)
+
+                            for i, intended_duplicate_gpu in enumerate(list(process_config['duplicate_onto_gpu'])):
+                                instance_process_name = process_name_ + f"_inst_{i+1}"
+                                print(f"Model {instance_process_name} is going to {intended_duplicate_gpu}")
+                                model_process_process_directory[instance_process_name] = setup_process_process(model_class_, {"gpu_number": intended_duplicate_gpu}, instance_process_name)
+
+                            model_processes_input_queues['METADATA_DUPLICATE_PROCESSES'].append(process_name_)
+
+                        else:
+                            print(f"{process_name_} is going to gpu {intended_gpu}")
+                            model_process_process_directory[process_name_] = setup_process_process(model_class_, {"gpu_number": intended_gpu}, process_name_)
+
             else: # no GPU needed
                 # PROCESS ASSIGNMENT
                 for process_name_ in model_class_.list_processes():
@@ -174,13 +190,14 @@ def initialize_models_and_processes(
                     if not stage_execution_config.multiprocessing.use:
                         context.model_process_map[process_name_] = make_fn_singleprocessing(model_class_(gpu_number=-1), process_name_)
                     else:
-                        model_process_process_directory[process_name_] = setup_process_process(model_class_, {"gpu_number": intended_gpu},process_name_)
+                        model_process_process_directory[process_name_] = setup_process_process(model_class_, {"gpu_number": -1},process_name_)
 
 def finish_all_consumers(model_processes_input_queues, model_process_process_directory):
     # Wait for consumers to finish
-    for q_in in model_processes_input_queues.values():
-        q_in.put(None)
-    for cons in model_process_process_directory.values():
+    for key, q_in in model_processes_input_queues.items():
+        if key != "METADATA_DUPLICATE_PROCESSES":
+            q_in.put(None)
+    for key, cons in model_process_process_directory.items():
         cons.join()
 
 def forward(queues=None, **kwargs):
@@ -199,8 +216,22 @@ def forward(queues=None, **kwargs):
         return context.model_process_map[process_name](**kwargs)
     
     else:
+
         model_processes_input_queues, worker_output_queue = queues
-        model_processes_input_queues[process_name].put([kwargs, worker_output_queue])
+
+        if process_name not in model_processes_input_queues['METADATA_DUPLICATE_PROCESSES']:
+
+            model_processes_input_queues[process_name].put([kwargs, worker_output_queue])
+        else:
+            # in the future, I can implement a clock-based system to load-balance more deterministically, but I only have so much juice in the system. in the long run, such a system would achieve same performance as this anyway
+            # actually, the most optimal thing to do would be to fill up the batch of one instance model process, then move onto the next, then the next -- a meta batch clock. But again, I only have so much 🧃
+            instance_model_process_names = [name for name in model_processes_input_queues if process_name + "_inst_" in name]
+
+            import random
+            random_instance_model_process_name = random.choice(instance_model_process_names) # error here
+            
+            model_processes_input_queues[random_instance_model_process_name].put([kwargs, worker_output_queue])
+
         return worker_output_queue.get()
 
 def collate(batch_inputs):

@@ -335,7 +335,7 @@ class BLIPModel(BaseModel):
 
     @classmethod
     def list_processes(cls):
-        return ['blip_qa', 'blip_caption']
+        return ['blip_qa'] # 'blip_caption']
 
 class XVLMModel(BaseModel):
     name = 'xvlm'

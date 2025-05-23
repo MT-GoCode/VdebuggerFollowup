@@ -1,6 +1,14 @@
 # Command Log for reproducibility
 
+Future features:
+- benchmark the reliance on each process
+- import error can still occur. retry a few times
+- Traceback (most recent call last):                                                                                                                                                   File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/multiprocessing/process.py", line 314, in _bootstrap                                                          self.run()                                                                                                                                                                       File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/multiprocessing/process.py", line 108, in run                                                                 self._target(*self._args, **self._kwargs)                                                                                                                                        File "/local/minhtr/VIPER/VdebuggerFollowup/vision_processes.py", line 123, in _persistent_function                                                                                  out = fn(**kwargs)                                                                                                                                                               File "/local/minhtr/VIPER/VdebuggerFollowup/vision_processes.py", line 66, in _function                                                                                              return model_instance.forward(**kwargs)                                                                                                                                          File "/local/minhtr/VIPER/VdebuggerFollowup/vision_models.py", line 103, in forward                                                                                                  inputs = self.processor(text=labels, images=image, return_tensors="pt")                                                                                                          File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/site-packages/transformers/models/owlv2/processing_owlv2.py", line 163, in __call__                           encoding = self.tokenizer(text_single, **output_kwargs["text_kwargs"])                                                                                                           File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/site-packages/transformers/tokenization_utils_base.py", line 2887, in __call__                                encodings = self._call_one(text=text, text_pair=text_pair, **all_kwargs)                                                                                                         File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/site-packages/transformers/tokenization_utils_base.py", line 2975, in _call_one                               return self.batch_encode_plus(                                                                                                                                                   File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/site-packages/transformers/tokenization_utils_base.py", line 3177, in batch_encode_plus                       return self._batch_encode_plus(                                                                                                                                                  File "/local/minhtr/programs/miniconda3/envs/viper-main/lib/python3.10/site-packages/transformers/tokenization_utils_fast.py", line 539, in _batch_encode_plus                       encodings = self._tokenizer.encode_batch(                                                                                                                                      TypeError: TextEncodeInput must be Union[TextInputSequence, Tuple[InputSequence, InputSequence]]   
+
+No module named '120_d1a9ae09-8800-4e22-9480-bd2d390eb6ef
+
 ```
+To combine worker logs, use cat *_worker*.txt > combined_worker_log.txt
 # ORGANIZATION:
 # Root directory used is VIPER.
 # VIPER/VdebuggerFollowup is this repository, a fork from the original viper codebase.
@@ -103,11 +111,12 @@ cd VIPER/datasets
 mkdir LVBench
 cd LVBench
 
-mkdir raw_zips && cd raw_zips 
 python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='AIWinter/LVBench', repo_type='dataset', local_dir='LVBench')"
 
+mv LVBench raw_download
+
 cd ..
-cat raw_zips/all_videos_split.zip.* > combined.zip
+cat raw_download/all_videos_split.zip.* > combined.zip
 unzip combined.zip
 
 wget https://huggingface.co/datasets/THUDM/LVBench/resolve/main/video_info.meta.jsonl
@@ -115,6 +124,7 @@ wget https://huggingface.co/datasets/THUDM/LVBench/resolve/main/video_info.meta.
 mkdir csvs
 
 # copy and paste helper_scripts/lvbenchcsv_generator.py here
+# ensure ffmpeg is installed before this next step -- see appendix setup
 
 python lvbenchcsv_generator.py
 ```
